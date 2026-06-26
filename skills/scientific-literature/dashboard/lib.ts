@@ -34,7 +34,7 @@ async function runScilit(args: string[]): Promise<unknown> {
     {
       cwd: CWD,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TYPEDB_DATABASE: 'alhazen_notebook' },
+      env: { ...process.env, TYPEDB_DATABASE: 'alh_deep_research' },
     }
   );
   return JSON.parse(stdout);
@@ -48,7 +48,7 @@ async function runNotebook(args: string[]): Promise<unknown> {
     {
       cwd: CWD,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TYPEDB_DATABASE: 'alhazen_notebook' },
+      env: { ...process.env, TYPEDB_DATABASE: 'alh_deep_research' },
     }
   );
   return JSON.parse(stdout);
