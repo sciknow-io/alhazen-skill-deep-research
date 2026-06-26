@@ -1,0 +1,14 @@
+{
+  "name": "add-citation-impact",
+  "description": "Record how a citing paper received the focal paper's claims: a scilit-citation-impact note threaded under the investigation, with an aboutness link to the citing paper. impact_type: supports|refutes|extends|nuances|uses|unrelated. Add the citing paper to the investigation's traced corpus separately via the add-paper-to-corpus recipe.",
+  "params": ["investigation", "citing_paper", "name", "impact_type", "impact_summary"],
+  "ops": [
+    {"op": "create", "type": "scilit-citation-impact", "as": "imp",
+     "attrs": {"name": "{{name}}", "scilit-impact-type": "{{impact_type}}",
+               "scilit-impact-summary": "{{impact_summary}}"}},
+    {"op": "link", "relation": "alh-note-threading",
+     "roles": {"parent-note": "{{investigation}}", "child-note": "$imp"}},
+    {"op": "link", "relation": "alh-aboutness",
+     "roles": {"note": "$imp", "subject": "{{citing_paper}}"}}
+  ]
+}

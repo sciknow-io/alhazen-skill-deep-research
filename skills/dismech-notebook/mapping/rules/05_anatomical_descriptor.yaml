@@ -1,0 +1,17 @@
+name: anatomical_descriptor
+description: Map dismech anatomicalentitydescriptor to dm-anatomical-descriptor
+depends_on: []
+idempotent: true
+source_match: |
+  match
+    $x isa anatomicalentitydescriptor, has preferred-term $pt;
+  fetch {
+    "preferred_term": $pt
+  };
+target_insert: |
+  insert
+    $td isa dm-anatomical-descriptor,
+      has id $skolem_id,
+      has name $preferred_term,
+      has dm-preferred-term $preferred_term;
+skolem_keys: [preferred_term]

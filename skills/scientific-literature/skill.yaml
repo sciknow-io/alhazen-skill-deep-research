@@ -1,0 +1,39 @@
+name: scientific-literature
+version: "0.1.0"
+description: >
+  Multi-source scientific literature search, ingestion, and analysis.
+  Search Europe PMC, PubMed, OpenAlex, bioRxiv/medRxiv; store papers in TypeDB;
+  embed and semantically search with Voyage AI + Qdrant.
+author: Alhazen Contributors
+license: Apache-2.0
+typedb_schema: schema.tql
+schema:
+  namespace: scilit
+  depends_on: []
+cli: scientific_literature.py
+tags: [literature, pubmed, epmc, openalex, biorxiv, ingestion, semantic-search]
+requires:
+  bins: [uv, docker]
+  env: [TYPEDB_HOST, TYPEDB_PORT, TYPEDB_DATABASE]
+  env_optional: [NCBI_API_KEY, OPENALEX_API_KEY, VOYAGE_API_KEY, QDRANT_HOST, QDRANT_PORT]
+operations:
+  - search        # Multi-source search (--source epmc|pubmed|openalex|biorxiv|medrxiv)
+  - count         # Count results without storing (EPMC only)
+  - ingest        # Fetch single paper by DOI or PMID
+  - show          # Show paper details
+  - list          # List papers (optionally by collection)
+  - list-collections  # List all scilit corpora
+  - embed         # Generate Voyage AI embeddings -> Qdrant
+  - search-semantic   # Find similar papers by meaning
+  - cluster       # HDBSCAN thematic clustering
+  - plot-clusters # 2D UMAP scatter plot coloured by cluster
+apis:
+  europe_pmc:
+    endpoint: "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+  ncbi:
+    endpoint: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+  openalex:
+    endpoint: "https://api.openalex.org"
+  biorxiv:
+    endpoint: "https://api.biorxiv.org/pubs"
+integrates_with: [typedb-notebook, jobhunt]

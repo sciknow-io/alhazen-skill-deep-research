@@ -1,0 +1,9 @@
+{
+  "name": "add-paper-to-corpus",
+  "description": "Add a paper (or any domain entity) to a corpus/collection via alh-collection-membership. Idempotent - re-running does not duplicate the membership. created-at is auto-stamped.",
+  "params": ["corpus", "paper"],
+  "ops": [
+    {"op": "link", "relation": "alh-collection-membership", "idempotent": true,
+     "roles": {"collection": "{{corpus}}", "member": "{{paper}}"}}
+  ]
+}

@@ -1,0 +1,20 @@
+name: disease_term
+description: Link dm-disease to its dm-disease-descriptor (MONDO term)
+depends_on: [disease, disease_descriptor]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, diseasedescriptor: $dd) isa disease-term;
+    $dd has preferred-term $pt;
+  fetch {
+    "disease_name": $dname,
+    "descriptor_term": $pt
+  };
+target_insert: |
+  match
+    $td isa dm-disease, has name $disease_name;
+    $tdd isa dm-disease-descriptor, has name $descriptor_term;
+  insert
+    (dm-dtl-disease: $td, dm-dtl-descriptor: $tdd) isa dm-disease-term-link;
+skolem_keys: [disease_name, descriptor_term]

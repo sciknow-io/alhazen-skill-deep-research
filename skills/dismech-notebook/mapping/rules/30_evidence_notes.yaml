@@ -1,0 +1,28 @@
+name: evidence_notes
+description: Map dismech evidenceitem to dm-evidence-note with aboutness to mechanism and citation to paper
+depends_on: [mechanism, papers]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, pathophysiology: $m) isa pathophysiology-rel;
+    $m has name $mname;
+    (pathophysiology: $m, evidenceitem: $e) isa evidence;
+    $e has reference $ref, has supports $sup;
+  fetch {
+    "disease_name": $dname,
+    "mechanism_name": $mname,
+    "reference": $ref,
+    "supports": $sup
+  };
+target_insert: |
+  match
+    $tm isa dm-mechanism, has name $mechanism_name;
+  insert
+    $tn isa dm-evidence-note,
+      has id $skolem_id,
+      has name $reference,
+      has dm-support-rating $supports,
+      has dm-reference-pmid $reference;
+    (note: $tn, subject: $tm) isa alh-aboutness;
+skolem_keys: [disease_name, mechanism_name, reference]

@@ -1,0 +1,23 @@
+{
+  "name": "tech-recon",
+  "version": "0.1.0",
+  "description": "Goal-driven technology investigation \u2014 interview, discover, ingest, analyze, and visualize competing systems against user-defined success criteria",
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "technology",
+    "visualization",
+    "investigation"
+  ],
+  "dependencies": [
+    {
+      "name": "alhazen-core",
+      "marketplace": "skillful-alhazen"
+    },
+    {
+      "name": "typedb-notebook",
+      "marketplace": "skillful-alhazen"
+    },
+    "scientific-literature"
+  ]
+}

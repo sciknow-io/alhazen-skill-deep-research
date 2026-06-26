@@ -1,0 +1,16 @@
+name: disease
+description: Map dismech disease entities to dm-disease in alhazen_notebook
+depends_on: []
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $n;
+  fetch {
+    "name": $n
+  };
+target_insert: |
+  insert
+    $td isa dm-disease,
+      has id $skolem_id,
+      has name $name;
+skolem_keys: [name]

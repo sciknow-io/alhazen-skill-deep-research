@@ -1,0 +1,17 @@
+name: papers
+description: Create scilit-paper stubs for all PMIDs referenced in evidence items
+depends_on: []
+idempotent: true
+source_match: |
+  match
+    $e isa evidenceitem, has reference $ref;
+  fetch {
+    "reference": $ref
+  };
+target_insert: |
+  insert
+    $p isa scilit-paper,
+      has id $skolem_id,
+      has name $reference,
+      has scilit-pmid $reference;
+skolem_keys: [reference]

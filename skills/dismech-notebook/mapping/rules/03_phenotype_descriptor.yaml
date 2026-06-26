@@ -1,0 +1,17 @@
+name: phenotype_descriptor
+description: Map dismech phenotypedescriptor entities to dm-phenotype-descriptor
+depends_on: []
+idempotent: true
+source_match: |
+  match
+    $x isa phenotypedescriptor, has preferred-term $pt;
+  fetch {
+    "preferred_term": $pt
+  };
+target_insert: |
+  insert
+    $td isa dm-phenotype-descriptor,
+      has id $skolem_id,
+      has name $preferred_term,
+      has dm-preferred-term $preferred_term;
+skolem_keys: [preferred_term]

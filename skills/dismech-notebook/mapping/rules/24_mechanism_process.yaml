@@ -1,0 +1,24 @@
+name: mechanism_process
+description: Link dm-mechanism to dm-process-descriptor via biological-processes relation
+depends_on: [mechanism, process_descriptor]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, pathophysiology: $m) isa pathophysiology-rel;
+    $m has name $mname;
+    (pathophysiology: $m, biologicalprocessdescriptor: $bp) isa biological-processes;
+    $bp has preferred-term $bpt;
+  fetch {
+    "disease_name": $dname,
+    "mechanism_name": $mname,
+    "process_term": $bpt,
+    "modifier": $bp.modifier
+  };
+target_insert: |
+  match
+    $tm isa dm-mechanism, has name $mechanism_name;
+    $tp isa dm-process-descriptor, has name $process_term;
+  insert
+    (dm-mp-mechanism: $tm, dm-mp-process: $tp) isa dm-mechanism-process;
+skolem_keys: [disease_name, mechanism_name, process_term]

@@ -1,0 +1,32 @@
+{
+  "name": "alhazen-deep-research",
+  "description": "Deep-research Alhazen skills sharing one TypeDB database (alh_deep_research): literature search, trend analysis, technology recon, and disease-mechanism notebook.",
+  "homepage": "https://github.com/sciknow-io/alhazen-skill-deep-research",
+  "owner": {
+    "name": "SciKnow.io",
+    "url": "https://github.com/sciknow-io"
+  },
+  "allowCrossMarketplaceDependenciesOn": ["skillful-alhazen"],
+  "plugins": [
+    {
+      "name": "scientific-literature",
+      "source": "./skills/scientific-literature",
+      "description": "Multi-source scientific literature search and ingestion (EPMC, PubMed, OpenAlex, bioRxiv). The schema base for the deep-research database."
+    },
+    {
+      "name": "literature-trends",
+      "source": "./skills/literature-trends",
+      "description": "Abductive argumentation-based literature trend analysis across tagged literature threads"
+    },
+    {
+      "name": "tech-recon",
+      "source": "./skills/tech-recon",
+      "description": "Goal-driven technology investigation -- interview, discover, ingest, analyze, and visualize competing systems against success criteria"
+    },
+    {
+      "name": "dismech-notebook",
+      "source": "./skills/dismech-notebook",
+      "description": "DisMech rare-disease mechanism knowledge mapped into the Alhazen notebook (GLAV import from the dismech source database)"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "record-phase",
+  "description": "Create a phase note (scilit-investigation-phase) and thread it under an investigation. NOTE: one phase note per (investigation, phase) is a convention, not enforced here - query existing phases first and use set-attr to update content if the phase already exists.",
+  "params": ["investigation", "phase", "phase_name", "content"],
+  "ops": [
+    {"op": "create", "type": "scilit-investigation-phase", "as": "ph",
+     "attrs": {"name": "{{phase_name}}", "content": "{{content}}",
+               "scilit-phase": "{{phase}}"}},
+    {"op": "link", "relation": "alh-note-threading",
+     "roles": {"parent-note": "{{investigation}}", "child-note": "$ph"}}
+  ]
+}

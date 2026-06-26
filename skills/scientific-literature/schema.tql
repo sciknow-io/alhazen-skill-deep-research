@@ -1,0 +1,538 @@
+# =============================================================================
+# SCIENTIFIC LITERATURE NAMESPACE - TypeDB 3.x Schema Extension
+# =============================================================================
+# Domain-specific subtypes for scientific literature analysis.
+# Namespace prefix: scilit-*
+#
+# Aligned to the alh-/scilit- namespace migration: scilit domain attributes are
+# scilit-prefixed; entities subtype the alh- core bases (alh-collection,
+# alh-domain-thing, alh-artifact, alh-fragment, alh-note); relations are
+# scilit-prefixed (role names unchanged). Truly shared attributes (name,
+# abstract-text, publication-date, id, source-uri, created-at, provenance, ...)
+# remain unprefixed and are inherited from the core schema.
+# =============================================================================
+
+define
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Scientific Literature Specific
+# -----------------------------------------------------------------------------
+
+# Publication identifiers
+attribute scilit-doi, value string;
+attribute scilit-pmid, value string;
+attribute scilit-pmcid, value string;
+attribute scilit-arxiv-id, value string;
+attribute scilit-issn, value string;
+attribute scilit-isbn, value string;
+
+# Publication metadata
+attribute scilit-journal-name, value string;
+attribute scilit-journal-volume, value string;
+attribute scilit-journal-issue, value string;
+attribute scilit-page-range, value string;
+attribute scilit-publication-year, value integer;
+attribute scilit-keyword, value string;
+
+# Citation-target registry (acquisition tracking for cited references)
+attribute scilit-acquisition-status, value string;   # needed | held | ingested | sensemade | rhetorical-done
+attribute scilit-target-genre, value string;         # primary | review | unknown
+attribute scilit-reference-key, value string;        # "<citing-paper-id>:<ref-number>" (multi-valued)
+attribute scilit-citation-load, value integer;       # how many citing-claims/occurrences depend on this target
+
+# Section types
+attribute scilit-section-type, value string;
+attribute scilit-section-number, value string;
+attribute scilit-heading-level, value integer;
+
+# Figure/table specific
+attribute scilit-figure-number, value string;
+attribute scilit-table-number, value string;
+attribute scilit-caption, value string;
+
+# Note type classification
+attribute scilit-note-type, value string;
+attribute scilit-extraction-method, value string;
+attribute scilit-extraction-model, value string;
+
+# --- discourse-source + experience-note attributes (KQED discourse/source layer) ---
+attribute scilit-session-type, value string;     # keynote | workshop | tutorial | talk | panel
+attribute scilit-speaker, value string;
+attribute scilit-affiliation, value string;
+attribute scilit-session-url, value string;
+attribute scilit-experience-event, value string; # the occasion, e.g. "CAIS 2026 keynote"
+
+# Dataset specific
+attribute scilit-dataset-url, value string;
+attribute scilit-dataset-format, value string;
+attribute scilit-dataset-size, value string;
+
+# Relation attributes
+attribute scilit-usage-type, value string;
+
+# Investigation lifecycle
+# scilit-investigation-status: scoping|discovery|ingest|sensemaking|analysis|report|complete
+attribute scilit-investigation-status, value string;
+# scilit-phase: discovery|ingest|sensemaking|analysis|report
+attribute scilit-phase, value string;
+
+# Investigation typing (deep-dive | conference-overview | corpus)
+attribute scilit-investigation-type, value string;
+
+# Deep-dive: claim / evidence / citation-impact
+# scilit-claim-type: primary|secondary|peripheral
+attribute scilit-claim-type, value string;
+attribute scilit-claim-statement, value string;
+# scilit-evidence-type: experimental|observational|computational|review|theoretical|anecdotal
+attribute scilit-evidence-type, value string;
+attribute scilit-experimental-design, value string;
+attribute scilit-data-summary, value string;
+# scilit-impact-type: supports|refutes|extends|nuances|uses|unrelated
+attribute scilit-impact-type, value string;
+attribute scilit-impact-summary, value string;
+# Fallback locator when a source/citing paper has no DOI
+attribute scilit-source-url, value string;
+
+# Paper identity attributes (KQED)
+attribute scilit-identity-basis, value string;   # doi | pmid | arxiv | content-hash
+attribute scilit-identity-value, value string;    # the normalized basis key
+attribute scilit-fulltext-kind, value string;     # pdf | text | html | supplement
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Scientific Literature Collections
+# -----------------------------------------------------------------------------
+
+# SCILIT-CORPUS - A literature corpus (set of papers on a topic)
+entity scilit-corpus sub alh-collection;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Scientific Literature Things
+# -----------------------------------------------------------------------------
+
+# SCILIT-PAPER - A scientific publication
+entity scilit-paper sub alh-domain-thing,
+    owns abstract-text,
+    owns publication-date,
+    owns scilit-doi,
+    owns scilit-pmid,
+    owns scilit-pmcid,
+    owns scilit-arxiv-id,
+    owns scilit-journal-name,
+    owns scilit-journal-volume,
+    owns scilit-journal-issue,
+    owns scilit-page-range,
+    owns scilit-publication-year,
+    owns scilit-keyword @card(0..),
+    owns scilit-acquisition-status,
+    owns scilit-target-genre,
+    owns scilit-reference-key @card(0..),
+    owns scilit-citation-load,
+    owns scilit-identity-basis,
+    owns scilit-identity-value,
+    plays scilit-supplementary-material:paper,
+    plays scilit-dataset-usage:paper-entity;
+
+
+# SCILIT-DATASET - A scientific dataset
+entity scilit-dataset sub alh-domain-thing,
+    owns abstract-text,
+    owns scilit-doi,
+    owns scilit-dataset-url,
+    owns scilit-dataset-format,
+    owns scilit-dataset-size,
+    plays scilit-dataset-usage:dataset-entity;
+
+
+# SCILIT-PREPRINT - A preprint publication
+entity scilit-preprint sub alh-domain-thing,
+    owns abstract-text,
+    owns publication-date,
+    owns scilit-doi,
+    owns scilit-arxiv-id;
+
+
+# SCILIT-REVIEW - A review article
+entity scilit-review sub scilit-paper;
+
+
+# SCILIT-BOOK - A book or book chapter
+entity scilit-book sub alh-domain-thing,
+    owns abstract-text,
+    owns publication-date,
+    owns scilit-isbn,
+    owns scilit-doi;
+
+
+# SCILIT-PROTOCOL - A published protocol or methods paper
+entity scilit-protocol sub scilit-paper;
+
+
+# SCILIT-SESSION - a discourse SOURCE (keynote/workshop/tutorial/talk/panel), sibling of
+# scilit-paper. The domain-neutral source for spoken/event content used by meeting surveys.
+# alh-aboutness:subject and alh-collection-membership:member are inherited from alh-domain-thing;
+# the scilit-hinge:hinged-to play is added additively below (scilit-hinge is defined later).
+entity scilit-session sub alh-domain-thing,
+    owns scilit-session-type,
+    owns scilit-speaker @card(0..),
+    owns scilit-affiliation @card(0..),
+    owns scilit-session-url,
+    owns scilit-publication-year;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Scientific Literature Artifacts
+# -----------------------------------------------------------------------------
+
+# SCILIT-JATS-FULLTEXT - JATS XML full-text representation
+entity scilit-jats-fulltext sub alh-artifact;
+
+
+# SCILIT-PDF-FULLTEXT - PDF full-text representation
+entity scilit-pdf-fulltext sub alh-artifact;
+
+
+# SCILIT-CITATION-RECORD - Citation/metadata record (from PubMed, Crossref, etc.)
+entity scilit-citation-record sub alh-artifact;
+
+
+# SCILIT-SUPPLEMENTARY - Supplementary material artifact
+entity scilit-supplementary sub alh-artifact,
+    plays scilit-supplementary-material:supplement;
+
+
+# SCILIT-STRUCTURED-DATA - Structured data extracted from a paper
+entity scilit-structured-data sub alh-artifact;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Scientific Literature Fragments
+# -----------------------------------------------------------------------------
+
+# SCILIT-SECTION - A section of a paper
+entity scilit-section sub alh-fragment,
+    owns scilit-section-type,
+    owns scilit-section-number,
+    owns scilit-heading-level;
+
+
+# SCILIT-FIGURE - A figure from a paper
+entity scilit-figure sub alh-fragment,
+    owns scilit-figure-number,
+    owns scilit-caption,
+    plays scilit-figure-reference:referenced-figure;
+
+
+# SCILIT-TABLE - A table from a paper
+entity scilit-table sub alh-fragment,
+    owns scilit-table-number,
+    owns scilit-caption,
+    plays scilit-table-reference:referenced-table;
+
+
+# SCILIT-PARAGRAPH - A paragraph from a paper
+entity scilit-paragraph sub alh-fragment,
+    plays scilit-figure-reference:referencing-text,
+    plays scilit-table-reference:referencing-text;
+
+
+# SCILIT-SENTENCE - A sentence from a paper
+entity scilit-sentence sub alh-fragment,
+    plays scilit-figure-reference:referencing-text,
+    plays scilit-table-reference:referencing-text;
+
+
+# SCILIT-EQUATION - An equation from a paper
+entity scilit-equation sub alh-fragment;
+
+
+# SCILIT-REFERENCE - A reference entry from a paper's bibliography
+entity scilit-reference sub alh-fragment;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Scientific Literature Notes
+# -----------------------------------------------------------------------------
+
+# SCILIT-EXTRACTION-NOTE - Extracted information from a paper
+entity scilit-extraction-note sub alh-sensemaking-note,
+    owns scilit-note-type,
+    owns scilit-extraction-method,
+    owns scilit-extraction-model;
+
+
+# SCILIT-CLASSIFICATION-NOTE - Classification/categorization of a paper
+entity scilit-classification-note sub alh-sensemaking-note,
+    owns scilit-note-type;
+
+
+# SCILIT-SUMMARY-NOTE - Summary of a paper or section
+entity scilit-summary-note sub alh-sensemaking-note,
+    owns scilit-note-type;
+
+
+# SCILIT-SYNTHESIS-NOTE - Synthesis across multiple papers
+entity scilit-synthesis-note sub alh-analysis-note,
+    owns scilit-note-type,
+    owns scilit-synthesis-stance;
+
+
+# SCILIT-CRITIQUE-NOTE - Critical analysis or review
+entity scilit-critique-note sub alh-analysis-note,
+    owns scilit-note-type;
+
+
+# SCILIT-METHODOLOGY-NOTE - Notes about methods/protocols
+entity scilit-methodology-note sub alh-sensemaking-note,
+    owns scilit-note-type;
+
+
+# SCILIT-EXPERIENCE-NOTE - a first-person anecdote / engagement record (System 1 rhetorical,
+# discourse layer). `about` a source (session/paper) or person via the inherited alh-aboutness:note.
+# Distinct from the KQED epistemic scilit-observation (a measurement-in-context, System 2).
+entity scilit-experience-note sub alh-sensemaking-note,
+    owns scilit-experience-event;
+
+
+# SCILIT-FACETING-NOTE - A re-runnable feature-faceting workflow over one or more scilit corpora.
+# The worked example of the general alh-analysis-pipeline-note: stores a self-contained Hamilton
+# module (alh-pipeline-script) that fetches the corpora, writes facet:value scilit-keyword tags,
+# and computes cross-tabulations; config (alh-pipeline-config) carries the facet schema + per-paper
+# assignments. Linked to its source scilit-corpus collections via alh-aboutness.
+entity scilit-faceting-note sub alh-analysis-pipeline-note,
+    owns scilit-note-type;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Deep-Dive (single-paper) claim/evidence/citation graph
+# -----------------------------------------------------------------------------
+# A deep-dive investigation resolves every claim in a focal scilit-paper down to
+# primary evidence and surveys how citing papers received it. The investigation
+# note is the root (its aboutness:subject is the focal scilit-paper). Claims are
+# threaded under the investigation; evidence under each claim; citation-impacts
+# under the investigation. Source/citing papers are real scilit-paper entities,
+# linked via alh-aboutness (note->subject). All threading/aboutness plays are
+# inherited from alh-note - SVL42 forbids redeclaring them, so these declare
+# `owns` only.
+
+# SCILIT-CLAIM - A single claim extracted from the focal paper.
+entity scilit-claim sub alh-analysis-note,
+    owns scilit-claim-type,
+    owns scilit-claim-statement;
+
+
+# SCILIT-EVIDENCE - Evidence supporting a claim, threaded under the claim.
+# When the evidence comes from a cited paper, that paper is linked via
+# alh-aboutness (note:$evidence, subject:$source-paper); scilit-source-url is a
+# fallback locator for sources with no DOI.
+entity scilit-evidence sub alh-analysis-note,
+    owns scilit-evidence-type,
+    owns scilit-experimental-design,
+    owns scilit-data-summary,
+    owns scilit-source-url;
+
+
+# SCILIT-CITATION-IMPACT - How a citing paper received the focal paper's claims,
+# threaded under the investigation. The citing paper is linked via alh-aboutness
+# (note:$impact, subject:$citing-paper).
+entity scilit-citation-impact sub alh-analysis-note,
+    owns scilit-impact-type,
+    owns scilit-impact-summary;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Scientific Literature Investigations
+# -----------------------------------------------------------------------------
+
+# SCILIT-INVESTIGATION - A named, dated, purpose-driven inquiry. Typed by
+# scilit-investigation-type: `corpus` (the default - aboutness subject is a
+# scilit-corpus) or `deep-dive` (aboutness subject is a single focal scilit-paper;
+# threads scilit-claim / scilit-citation-impact notes under it). Inherited `name`
+# is the title, inherited `content` is the purpose/goal (markdown), inherited
+# `created-at` is the start date. scilit-investigation-status tracks lifecycle
+# position. Parent of its phase notes via alh-note-threading. The scilit analogue
+# of tech-recon's trec-investigation, but explicit (phase notes, not just a status
+# string). The alh-aboutness:note and alh-note-threading:{parent,child}-note plays
+# are inherited from alh-note (TypeDB 3.8 forbids redeclaring an unspecialised
+# inherited plays - SVL42).
+entity scilit-investigation sub alh-note,
+    owns scilit-investigation-status,
+    owns scilit-investigation-type,
+    owns scilit-investigation-question;
+
+
+# SCILIT-INVESTIGATION-PHASE - A single phase note threaded under an investigation.
+# scilit-phase distinguishes which phase (discovery|ingest|sensemaking|analysis|
+# report); inherited `content` carries the phase's markdown findings. Child of the
+# investigation; also parent (analysis phase threads referenced scilit-faceting-note
+# pipelines under it) and may be about specific papers - all via plays inherited
+# from alh-note. One phase note per (investigation, phase) is enforced by the
+# record-phase upsert in the CLI.
+entity scilit-investigation-phase sub alh-note,
+    owns scilit-phase;
+
+
+# Additive extension: core artifact type owns full-text kind
+alh-artifact owns scilit-fulltext-kind;
+
+
+# -----------------------------------------------------------------------------
+# RELATION TYPES - Scientific Literature Specific
+# -----------------------------------------------------------------------------
+
+# SCILIT-SUPPLEMENTARY-MATERIAL - Links papers to their supplementary files
+relation scilit-supplementary-material,
+    relates paper,
+    relates supplement;
+
+
+# SCILIT-FIGURE-REFERENCE - When text references a figure
+relation scilit-figure-reference,
+    owns provenance,
+    relates referencing-text,
+    relates referenced-figure;
+
+
+# SCILIT-TABLE-REFERENCE - When text references a table
+relation scilit-table-reference,
+    owns provenance,
+    relates referencing-text,
+    relates referenced-table;
+
+
+# SCILIT-DATASET-USAGE - Links papers to datasets they use or produce
+relation scilit-dataset-usage,
+    owns scilit-usage-type,
+    owns provenance,
+    relates paper-entity,
+    relates dataset-entity;
+
+
+# =============================================================================
+# KQED PROTOTYPE  (System 1 rhetorical / System 2 epistemic-KEfED / System 3 mechanistic)
+# Published typing taxonomies are modeled as core alh-vocabulary terms + alh-classification
+# (provenance-bearing); only small structural value-sets are plain attributes here.
+# =============================================================================
+
+# --- structural attributes ---
+attribute kefed-variable-role, value string;     # parameter | constant | measurement
+attribute kefed-value-set, value string;         # e.g. "WT|KO"
+attribute kefed-efo-label, value string;         # EFO factor annotation (text)
+attribute scilit-knowledge-level, value string;  # observation|association|assertion|prediction (Biolink)
+attribute scilit-bio-scale, value string;        # molecular|cellular|tissue|organism
+attribute scilit-knowledge-goal, value string;
+attribute scilit-gap-provenance, value string;   # explicit-cue|inferred-from-hinge|both
+attribute scilit-mech-type, value string;        # activates|inhibits|maintains|suppresses
+attribute scilit-hinge-term-id, value string;    # soft FK to a Teufel-CFC alh-vocabulary-type
+
+# --- relations ---
+relation kefed-element,           # a KEfED model groups its design variables
+    relates model,
+    relates variable;
+
+relation kefed-observed-via,      # an observation instantiates a KEfED model (template)
+    relates observation,
+    relates model;
+
+relation kefed-licenses,          # warrant table as data: experiment-type term -> warrant term
+    relates licensing-type,
+    relates licensed-warrant;
+
+relation scilit-hinge,            # claim <-> existing knowledge claim (Teufel CFC)
+    owns scilit-hinge-term-id,
+    relates hinging-claim,
+    relates hinged-to;
+
+relation scilit-addresses,        # a claim/observation bears on a gap
+    relates addressing-note,
+    relates gap;
+
+# --- KQED grounding/typing foundations (domain-general; biology is one profile) ---
+attribute scilit-entity-kind, value string;        # capture-time kind hint (gene|process|...|model|technique|...)
+attribute scilit-grounding-label, value string;    # canonical FULL expression for grounding (not the abbreviation)
+attribute scilit-grounding-state, value string;    # grounded | needs-review | ungrounded
+attribute scilit-curie, value string;              # e.g. "GO:0006325", "WIKIDATA:Q42"
+attribute scilit-ontology-source, value string;    # e.g. "GO","CHEBI","RO","Biolink","WIKIDATA"
+attribute scilit-obsolete, value boolean;
+attribute scilit-predicate-curie, value string;    # grounded relationship predicate (e.g. RO:0002212)
+attribute scilit-investigation-question, value string;
+attribute scilit-synthesis-stance, value string;   # consensus | contested | emerging
+
+# Generic domain entity: a verbatim mention + kind hint, grounded later to a category + instance term.
+entity scilit-entity sub alh-domain-thing,
+    owns scilit-entity-kind,
+    owns scilit-grounding-label,
+    owns scilit-grounding-state;
+    # plays alh-classification:classified-entity inherited from alh-identifiable-entity
+
+# Generic typed relationship: subject --predicate--> object. Bio's mechanistic-link specializes it.
+relation scilit-relation,
+    owns scilit-predicate-curie,
+    relates subject,
+    relates object;
+
+# A canonical external ontology concept = a controlled-vocabulary term with a CURIE.
+entity scilit-ontology-term sub alh-vocabulary-type,
+    owns scilit-curie,
+    owns scilit-ontology-source,
+    owns scilit-obsolete,
+    plays alh-aboutness:subject;   # a synthesis note can be ABOUT a grounded concept
+    # plays alh-classification:type-facet + alh-type-hierarchy:subtype/supertype inherited from alh-vocabulary-type
+
+# An investigation's grounding policy (domain profile), captured in the KG (content = JSON profile),
+# threaded under the investigation. NOT a global yaml file.
+entity scilit-grounding-policy sub alh-note;
+
+relation scilit-mechanistic-link sub scilit-relation, # System-3 causal edge (a typed relation)
+    owns scilit-mech-type,
+    owns confidence,
+    relates mech-source,
+    relates mech-target;
+
+# --- entities ---
+# KEFED-MODEL - an experimental design (protocol) as an information artifact.
+# Experiment type via alh-classification -> experiment-type vocab term;
+# warrant DERIVED by following that term's kefed-licenses edge (not stored here).
+entity kefed-model sub alh-artifact,
+    plays kefed-element:model,
+    plays kefed-observed-via:model;
+
+# KEFED-VARIABLE - a design element (independent var, constant, or measurement).
+entity kefed-variable sub alh-domain-thing,
+    owns kefed-variable-role,
+    owns kefed-value-set,
+    owns kefed-efo-label,
+    plays kefed-element:variable;
+
+# OBSERVATION - a measurement-in-context; immutable, background-free (System 2, D node).
+entity scilit-observation sub alh-sensemaking-note,
+    owns scilit-knowledge-level,
+    owns scilit-bio-scale,
+    plays kefed-observed-via:observation,
+    plays scilit-addresses:addressing-note;
+
+# GAP - a statement of ignorance (System 1, Q node); category via alh-classification -> Boguslav term.
+entity scilit-gap sub alh-sensemaking-note,
+    owns scilit-knowledge-goal,
+    owns scilit-gap-provenance,
+    plays scilit-addresses:gap;
+
+# BIOENTITY - a System-3 domain entity (SIRT3, SOD2, ROS, HSC, aging...).
+entity scilit-bioentity sub scilit-entity,
+    plays scilit-mechanistic-link:mech-source,
+    plays scilit-mechanistic-link:mech-target;
+
+# --- additive plays extensions on existing types ---
+entity scilit-claim plays scilit-hinge:hinging-claim,
+    plays scilit-hinge:hinged-to,
+    plays scilit-addresses:addressing-note;
+entity scilit-paper plays scilit-hinge:hinged-to;
+entity scilit-session plays scilit-hinge:hinged-to;
+entity alh-vocabulary-type plays kefed-licenses:licensing-type,
+    plays kefed-licenses:licensed-warrant;
+
+
+# =============================================================================
+# END SCIENTIFIC LITERATURE NAMESPACE
+# =============================================================================

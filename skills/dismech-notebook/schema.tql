@@ -1,0 +1,263 @@
+# =============================================================================
+# DISMECH-NOTEBOOK NAMESPACE - TypeDB 3.x Schema Extension
+# =============================================================================
+# Maps DisMech rare disease knowledge into the Alhazen notebook's ICE model.
+# Extends alhazen_notebook.tql core schema (identifiable-entity, domain-thing,
+# collection, note, aboutness, etc.) and scientific-literature (scilit-paper).
+#
+#   Collection = dm-investigation (organizes disease mechanism curation)
+#   Thing      = dm-disease, dm-mechanism, dm-phenotype, dm-genetic,
+#                dm-treatment, dm-causal-edge, dm-variant, dm-*-descriptor
+#   Note       = dm-evidence-note, dm-finding-note
+#
+# Namespace prefix: dm-*
+# =============================================================================
+
+define
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - DisMech Namespace
+# (name, description, id, content, confidence, created-at, updated-at,
+#  provenance are already defined in the core schema)
+# -----------------------------------------------------------------------------
+
+# Investigation
+attribute dm-investigation-status, value string;
+
+# Disease
+attribute dm-mondo-id, value string;
+attribute dm-category, value string;
+attribute dm-slug, value string;
+
+# Mechanism
+attribute dm-mechanism-confidence, value string;
+attribute dm-causal-link-type, value string;
+
+# Phenotype
+attribute dm-hpo-id, value string;
+attribute dm-frequency, value string;
+attribute dm-severity, value string;
+attribute dm-onset-category, value string;
+
+# Genetic
+attribute dm-relationship-type, value string;
+attribute dm-association, value string;
+
+# Causal edge
+attribute dm-intermediate-mechanisms, value string;
+
+# Variant
+attribute dm-allele-type, value string;
+attribute dm-functional-impact, value string;
+attribute dm-clinical-significance, value string;
+
+# Descriptors
+attribute dm-preferred-term, value string;
+attribute dm-modifier, value string;
+
+# Evidence note
+attribute dm-support-rating, value string;
+attribute dm-evidence-source, value string;
+attribute dm-reference-pmid, value string;
+attribute dm-snippet, value string;
+
+# Finding note
+attribute dm-statement, value string;
+attribute dm-supporting-text, value string;
+
+
+# -----------------------------------------------------------------------------
+# RELATION TYPES
+# (defined before entities so role names resolve in plays clauses)
+# -----------------------------------------------------------------------------
+
+# Disease-centric relations
+relation dm-disease-has-mechanism,
+    relates dm-dhm-disease,
+    relates dm-dhm-mechanism;
+
+relation dm-disease-has-phenotype,
+    relates dm-dhp-disease,
+    relates dm-dhp-phenotype;
+
+relation dm-disease-has-genetic,
+    relates dm-dhg-disease,
+    relates dm-dhg-genetic;
+
+relation dm-disease-has-treatment,
+    relates dm-dht-disease,
+    relates dm-dht-treatment;
+
+relation dm-disease-term-link,
+    relates dm-dtl-disease,
+    relates dm-dtl-descriptor;
+
+relation dm-investigation-for-disease,
+    relates dm-ifd-investigation,
+    relates dm-ifd-disease;
+
+# Mechanism chain relations
+relation dm-mechanism-downstream,
+    relates dm-md-mechanism,
+    relates dm-md-edge;
+
+relation dm-mechanism-sequelae,
+    relates dm-ms-edge,
+    relates dm-ms-target;
+
+relation dm-gene-annotation,
+    relates dm-ga-subject,
+    relates dm-ga-gene;
+
+relation dm-mechanism-location,
+    relates dm-ml-mechanism,
+    relates dm-ml-location;
+
+relation dm-mechanism-celltype,
+    relates dm-mc-mechanism,
+    relates dm-mc-celltype;
+
+relation dm-mechanism-process,
+    relates dm-mp-mechanism,
+    relates dm-mp-process;
+
+# Phenotype/treatment relations
+relation dm-phenotype-term,
+    relates dm-pt-phenotype,
+    relates dm-pt-descriptor;
+
+relation dm-treatment-targets-phenotype,
+    relates dm-ttp-treatment,
+    relates dm-ttp-phenotype;
+
+# Evidence bridge
+relation dm-evidence-citation,
+    relates dm-ec-note,
+    relates dm-ec-paper;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - DisMech Collection
+# -----------------------------------------------------------------------------
+
+entity dm-investigation sub alh-collection,
+    owns dm-investigation-status,
+    plays dm-investigation-for-disease:dm-ifd-investigation;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - DisMech Domain Things
+# -----------------------------------------------------------------------------
+
+entity dm-disease sub alh-domain-thing,
+    owns dm-mondo-id,
+    owns dm-category,
+    owns dm-slug,
+    plays dm-disease-has-mechanism:dm-dhm-disease,
+    plays dm-disease-has-phenotype:dm-dhp-disease,
+    plays dm-disease-has-genetic:dm-dhg-disease,
+    plays dm-disease-has-treatment:dm-dht-disease,
+    plays dm-disease-term-link:dm-dtl-disease,
+    plays dm-investigation-for-disease:dm-ifd-disease;
+
+entity dm-mechanism sub alh-domain-thing,
+    owns dm-mechanism-confidence,
+    owns dm-causal-link-type,
+    plays dm-disease-has-mechanism:dm-dhm-mechanism,
+    plays dm-mechanism-downstream:dm-md-mechanism,
+    plays dm-gene-annotation:dm-ga-subject,
+    plays dm-mechanism-location:dm-ml-mechanism,
+    plays dm-mechanism-celltype:dm-mc-mechanism,
+    plays dm-mechanism-process:dm-mp-mechanism;
+
+entity dm-phenotype sub alh-domain-thing,
+    owns dm-hpo-id,
+    owns dm-frequency,
+    owns dm-severity,
+    owns dm-onset-category,
+    plays dm-disease-has-phenotype:dm-dhp-phenotype,
+    plays dm-mechanism-sequelae:dm-ms-target,
+    plays dm-phenotype-term:dm-pt-phenotype,
+    plays dm-treatment-targets-phenotype:dm-ttp-phenotype;
+
+entity dm-genetic sub alh-domain-thing,
+    owns dm-relationship-type,
+    owns dm-association,
+    plays dm-disease-has-genetic:dm-dhg-genetic,
+    plays dm-gene-annotation:dm-ga-subject;
+
+entity dm-treatment sub alh-domain-thing,
+    plays dm-disease-has-treatment:dm-dht-treatment,
+    plays dm-treatment-targets-phenotype:dm-ttp-treatment;
+
+entity dm-causal-edge sub alh-domain-thing,
+    owns dm-causal-link-type,
+    owns dm-intermediate-mechanisms,
+    plays dm-mechanism-downstream:dm-md-edge,
+    plays dm-mechanism-sequelae:dm-ms-edge;
+
+entity dm-variant sub alh-domain-thing,
+    owns dm-allele-type,
+    owns dm-functional-impact,
+    owns dm-clinical-significance;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - DisMech Descriptors (controlled vocabulary terms)
+# -----------------------------------------------------------------------------
+
+entity dm-gene-descriptor sub alh-domain-thing,
+    owns dm-preferred-term,
+    plays dm-gene-annotation:dm-ga-gene;
+
+entity dm-phenotype-descriptor sub alh-domain-thing,
+    owns dm-preferred-term,
+    plays dm-phenotype-term:dm-pt-descriptor,
+    plays dm-disease-term-link:dm-dtl-descriptor;
+
+entity dm-disease-descriptor sub alh-domain-thing,
+    owns dm-preferred-term,
+    plays dm-disease-term-link:dm-dtl-descriptor;
+
+entity dm-anatomical-descriptor sub alh-domain-thing,
+    owns dm-preferred-term,
+    plays dm-mechanism-location:dm-ml-location;
+
+entity dm-celltype-descriptor sub alh-domain-thing,
+    owns dm-preferred-term,
+    plays dm-mechanism-celltype:dm-mc-celltype;
+
+entity dm-process-descriptor sub alh-domain-thing,
+    owns dm-preferred-term,
+    owns dm-modifier,
+    plays dm-mechanism-process:dm-mp-process;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - DisMech Notes
+# -----------------------------------------------------------------------------
+
+entity dm-evidence-note sub alh-analysis-note,
+    owns dm-support-rating,
+    owns dm-evidence-source,
+    owns dm-reference-pmid,
+    owns dm-snippet,
+    plays dm-evidence-citation:dm-ec-note;
+
+entity dm-finding-note sub alh-sensemaking-note,
+    owns dm-statement,
+    owns dm-supporting-text;
+
+
+# =============================================================================
+# CROSS-NAMESPACE EXTENSION
+# scilit-paper (defined in scientific-literature/schema.tql) participates
+# in dm-evidence-citation as the cited paper.
+# =============================================================================
+
+entity scilit-paper plays dm-evidence-citation:dm-ec-paper;
+
+
+# =============================================================================
+# END DISMECH-NOTEBOOK NAMESPACE
+# =============================================================================

@@ -1,0 +1,36 @@
+define
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute trend-window, value string;
+attribute trend-keyword, value string;
+attribute abductive-role, value string;
+attribute genealogy-type, value string;
+
+# ---------------------------------------------------------------------------
+# Relations (defined BEFORE entities so role names resolve in plays clauses)
+# ---------------------------------------------------------------------------
+
+relation hypothesis-genealogy,
+    owns genealogy-type,
+    owns confidence,
+    owns provenance,
+    owns description,
+    relates predecessor,
+    relates successor;
+
+# ---------------------------------------------------------------------------
+# Entities
+# ---------------------------------------------------------------------------
+
+entity trend-thread sub alh-collection,
+    owns trend-window,
+    owns trend-keyword;
+
+entity trend-hypothesis-note sub alh-analysis-note,
+    owns abductive-role,
+    owns trend-window,
+    plays hypothesis-genealogy:predecessor,
+    plays hypothesis-genealogy:successor;

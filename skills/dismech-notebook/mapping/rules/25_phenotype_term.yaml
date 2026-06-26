@@ -1,0 +1,23 @@
+name: phenotype_term
+description: Link dm-phenotype to dm-phenotype-descriptor via phenotype-term relation
+depends_on: [phenotype, phenotype_descriptor]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, phenotype: $p) isa phenotypes;
+    $p has name $pname;
+    (phenotype: $p, phenotypedescriptor: $pd) isa phenotype-term;
+    $pd has preferred-term $ppt;
+  fetch {
+    "disease_name": $dname,
+    "phenotype_name": $pname,
+    "descriptor_term": $ppt
+  };
+target_insert: |
+  match
+    $tp isa dm-phenotype, has name $phenotype_name;
+    $tpd isa dm-phenotype-descriptor, has name $descriptor_term;
+  insert
+    (dm-pt-phenotype: $tp, dm-pt-descriptor: $tpd) isa dm-phenotype-term;
+skolem_keys: [disease_name, phenotype_name, descriptor_term]

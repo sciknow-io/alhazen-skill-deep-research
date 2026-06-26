@@ -1,0 +1,24 @@
+name: mechanism
+description: Map dismech pathophysiology to dm-mechanism and link to dm-disease
+depends_on: [disease]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, pathophysiology: $m) isa pathophysiology-rel;
+    $m has name $mname;
+  fetch {
+    "disease_name": $dname,
+    "mechanism_name": $mname,
+    "description": $m.description
+  };
+target_insert: |
+  match
+    $td isa dm-disease, has name $disease_name;
+  insert
+    $tm isa dm-mechanism,
+      has id $skolem_id,
+      has name $mechanism_name,
+      has description $description;
+    (dm-dhm-disease: $td, dm-dhm-mechanism: $tm) isa dm-disease-has-mechanism;
+skolem_keys: [disease_name, mechanism_name]

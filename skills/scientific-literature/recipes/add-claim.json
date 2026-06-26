@@ -1,0 +1,12 @@
+{
+  "name": "add-claim",
+  "description": "Add a scilit-claim threaded under a deep-dive investigation. claim_type: primary|secondary|peripheral.",
+  "params": ["investigation", "name", "claim_type", "statement"],
+  "ops": [
+    {"op": "create", "type": "scilit-claim", "as": "cl",
+     "attrs": {"name": "{{name}}", "scilit-claim-type": "{{claim_type}}",
+               "scilit-claim-statement": "{{statement}}"}},
+    {"op": "link", "relation": "alh-note-threading",
+     "roles": {"parent-note": "{{investigation}}", "child-note": "$cl"}}
+  ]
+}

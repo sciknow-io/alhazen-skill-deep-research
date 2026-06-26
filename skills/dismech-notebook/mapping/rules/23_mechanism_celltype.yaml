@@ -1,0 +1,23 @@
+name: mechanism_celltype
+description: Link dm-mechanism to dm-celltype-descriptor via cell-types relation
+depends_on: [mechanism, celltype_descriptor]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, pathophysiology: $m) isa pathophysiology-rel;
+    $m has name $mname;
+    (pathophysiology: $m, celltypedescriptor: $cd) isa cell-types;
+    $cd has preferred-term $cpt;
+  fetch {
+    "disease_name": $dname,
+    "mechanism_name": $mname,
+    "celltype_term": $cpt
+  };
+target_insert: |
+  match
+    $tm isa dm-mechanism, has name $mechanism_name;
+    $tc isa dm-celltype-descriptor, has name $celltype_term;
+  insert
+    (dm-mc-mechanism: $tm, dm-mc-celltype: $tc) isa dm-mechanism-celltype;
+skolem_keys: [disease_name, mechanism_name, celltype_term]

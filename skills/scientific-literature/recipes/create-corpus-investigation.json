@@ -1,0 +1,13 @@
+{
+  "name": "create-corpus-investigation",
+  "description": "Create a corpus investigation about an existing scilit-corpus: the scilit-investigation note threaded to the corpus via alh-aboutness.",
+  "params": ["name", "purpose", "corpus", "status"],
+  "ops": [
+    {"op": "create", "type": "scilit-investigation", "as": "inv",
+     "attrs": {"name": "{{name}}", "content": "{{purpose}}",
+               "scilit-investigation-status": "{{status}}",
+               "scilit-investigation-type": "corpus"}},
+    {"op": "link", "relation": "alh-aboutness",
+     "roles": {"note": "$inv", "subject": "{{corpus}}"}}
+  ]
+}

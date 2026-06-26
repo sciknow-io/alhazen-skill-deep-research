@@ -1,0 +1,27 @@
+name: causal_edge
+description: Map dismech causaledge to dm-causal-edge linked to dm-mechanism via downstream
+depends_on: [mechanism]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, pathophysiology: $m) isa pathophysiology-rel;
+    $m has name $mname;
+    (pathophysiology: $m, causaledge: $ce) isa downstream;
+    $ce has target $cetarget;
+  fetch {
+    "disease_name": $dname,
+    "mechanism_name": $mname,
+    "edge_target": $cetarget,
+    "description": $ce.description
+  };
+target_insert: |
+  match
+    $tm isa dm-mechanism, has name $mechanism_name;
+  insert
+    $tce isa dm-causal-edge,
+      has id $skolem_id,
+      has name $edge_target,
+      has description $description;
+    (dm-md-mechanism: $tm, dm-md-edge: $tce) isa dm-mechanism-downstream;
+skolem_keys: [disease_name, mechanism_name, edge_target]

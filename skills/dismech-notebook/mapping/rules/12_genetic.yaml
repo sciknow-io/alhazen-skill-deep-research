@@ -1,0 +1,26 @@
+name: genetic
+description: Map dismech genetic to dm-genetic and link to dm-disease
+depends_on: [disease]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, genetic: $g) isa genetic-rel;
+    $g has name $gname;
+  fetch {
+    "disease_name": $dname,
+    "genetic_name": $gname,
+    "relationship_type": $g.relationship-type,
+    "association": $g.association
+  };
+target_insert: |
+  match
+    $td isa dm-disease, has name $disease_name;
+  insert
+    $tg isa dm-genetic,
+      has id $skolem_id,
+      has name $genetic_name,
+      has dm-relationship-type $relationship_type,
+      has dm-association $association;
+    (dm-dhg-disease: $td, dm-dhg-genetic: $tg) isa dm-disease-has-genetic;
+skolem_keys: [disease_name, genetic_name]

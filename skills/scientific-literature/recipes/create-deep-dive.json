@@ -1,0 +1,21 @@
+{
+  "name": "create-deep-dive",
+  "description": "Create a deep-dive investigation about a single focal paper: the scilit-investigation note (aboutness->focal paper), plus a dedicated traced scilit-corpus (aboutness->investigation) seeded with the focal paper.",
+  "params": ["name", "purpose", "focal_paper", "status"],
+  "ops": [
+    {"op": "create", "type": "scilit-investigation", "as": "inv",
+     "attrs": {"name": "{{name}}", "content": "{{purpose}}",
+               "scilit-investigation-status": "{{status}}",
+               "scilit-investigation-type": "deep-dive"}},
+    {"op": "link", "relation": "alh-aboutness",
+     "roles": {"note": "$inv", "subject": "{{focal_paper}}"}},
+    {"op": "create", "type": "scilit-corpus", "as": "corpus",
+     "attrs": {"name": "{{name}} - papers",
+               "description": "Papers traced by deep-dive: {{name}}",
+               "alh-is-extensional": "false"}},
+    {"op": "link", "relation": "alh-aboutness",
+     "roles": {"note": "$inv", "subject": "$corpus"}},
+    {"op": "link", "relation": "alh-collection-membership", "idempotent": true,
+     "roles": {"collection": "$corpus", "member": "{{focal_paper}}"}}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "add-evidence",
+  "description": "Add a scilit-evidence note threaded under a claim. evidence_type: experimental|observational|computational|review|theoretical|anecdotal. Optional fields (scilit-experimental-design, scilit-source-url) and the source-paper aboutness link are added afterward via set-attr / link.",
+  "params": ["claim", "name", "evidence_type", "data_summary"],
+  "ops": [
+    {"op": "create", "type": "scilit-evidence", "as": "ev",
+     "attrs": {"name": "{{name}}", "scilit-evidence-type": "{{evidence_type}}",
+               "scilit-data-summary": "{{data_summary}}"}},
+    {"op": "link", "relation": "alh-note-threading",
+     "roles": {"parent-note": "{{claim}}", "child-note": "$ev"}}
+  ]
+}

@@ -1,0 +1,23 @@
+name: mechanism_gene
+description: Link dm-mechanism to dm-gene-descriptor via gene relation
+depends_on: [mechanism, gene_descriptor]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, pathophysiology: $m) isa pathophysiology-rel;
+    $m has name $mname;
+    (pathophysiology: $m, genedescriptor: $gd) isa gene;
+    $gd has preferred-term $gpt;
+  fetch {
+    "disease_name": $dname,
+    "mechanism_name": $mname,
+    "gene_term": $gpt
+  };
+target_insert: |
+  match
+    $tm isa dm-mechanism, has name $mechanism_name;
+    $tg isa dm-gene-descriptor, has name $gene_term;
+  insert
+    (dm-ga-subject: $tm, dm-ga-gene: $tg) isa dm-gene-annotation;
+skolem_keys: [disease_name, mechanism_name, gene_term]

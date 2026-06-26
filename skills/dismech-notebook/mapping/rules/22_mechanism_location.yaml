@@ -1,0 +1,23 @@
+name: mechanism_location
+description: Link dm-mechanism to dm-anatomical-descriptor via locations relation
+depends_on: [mechanism, anatomical_descriptor]
+idempotent: true
+source_match: |
+  match
+    $d isa disease, has name $dname;
+    (disease: $d, pathophysiology: $m) isa pathophysiology-rel;
+    $m has name $mname;
+    (pathophysiology: $m, anatomicalentitydescriptor: $ad) isa locations;
+    $ad has preferred-term $apt;
+  fetch {
+    "disease_name": $dname,
+    "mechanism_name": $mname,
+    "location_term": $apt
+  };
+target_insert: |
+  match
+    $tm isa dm-mechanism, has name $mechanism_name;
+    $tl isa dm-anatomical-descriptor, has name $location_term;
+  insert
+    (dm-ml-mechanism: $tm, dm-ml-location: $tl) isa dm-mechanism-location;
+skolem_keys: [disease_name, mechanism_name, location_term]

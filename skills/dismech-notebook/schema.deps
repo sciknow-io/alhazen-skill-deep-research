@@ -1,0 +1,3 @@
+# Schema dependencies — this skill's schema extends types from other skills.
+# Skills listed here must have their schemas loaded first.
+scientific-literature
