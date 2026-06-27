@@ -534,5 +534,148 @@ entity alh-vocabulary-type plays kefed-licenses:licensing-type,
 
 
 # =============================================================================
+# INVESTIGATION STRUCTURAL RELATIONS - declarative typed wiring
+# Every structural edge inside an investigation is its own named relation, subtyping
+# the generic core relation (alh-note-threading / alh-aboutness) via role
+# specialization. Because each subtype instance is still matched by
+# `isa alh-note-threading` / `isa alh-aboutness`, existing polymorphic traversals and
+# deletes keep working unchanged; the generic relations stay available for ad-hoc,
+# unstructured (commented) note links. Entities declare explicit plays for each
+# specialized role - TypeDB does not infer plays through role specialization.
+# =============================================================================
+
+# --- note->note threading subtypes (sub alh-note-threading) ---
+
+# investigation -> grounding-policy (the investigation's domain grounding profile)
+relation scilit-investigation-grounding sub alh-note-threading,
+    relates investigation as parent-note,
+    relates policy as child-note;
+
+# investigation -> phase note (discovery|ingest|sensemaking|analysis|report)
+relation scilit-investigation-phasing sub alh-note-threading,
+    relates investigation as parent-note,
+    relates phase as child-note;
+
+# phase (analysis) -> faceting pipeline note
+relation scilit-phase-faceting sub alh-note-threading,
+    relates phase as parent-note,
+    relates faceting as child-note;
+
+# investigation -> claim
+relation scilit-investigation-claim sub alh-note-threading,
+    relates investigation as parent-note,
+    relates claim as child-note;
+
+# claim -> evidence
+relation scilit-claim-evidence sub alh-note-threading,
+    relates claim as parent-note,
+    relates evidence as child-note;
+
+# investigation -> citation-impact
+relation scilit-investigation-impact sub alh-note-threading,
+    relates investigation as parent-note,
+    relates impact as child-note;
+
+# investigation -> synthesis note
+relation scilit-investigation-synthesis sub alh-note-threading,
+    relates investigation as parent-note,
+    relates synthesis as child-note;
+
+# investigation -> observation (KQED System-2 measurement-in-context)
+relation scilit-investigation-observation sub alh-note-threading,
+    relates investigation as parent-note,
+    relates observation as child-note;
+
+# investigation -> gap (KQED System-1 statement of ignorance)
+relation scilit-investigation-gap sub alh-note-threading,
+    relates investigation as parent-note,
+    relates gap as child-note;
+
+# --- note->entity aboutness subtypes (sub alh-aboutness) ---
+
+# deep-dive investigation -> focal paper
+relation scilit-investigation-focus sub alh-aboutness,
+    relates investigation as note,
+    relates focal-paper as subject;
+
+# corpus investigation -> source corpus
+relation scilit-investigation-scope sub alh-aboutness,
+    relates investigation as note,
+    relates corpus as subject;
+
+# evidence -> the paper it is sourced from
+relation scilit-evidence-source sub alh-aboutness,
+    relates evidence as note,
+    relates source-paper as subject;
+
+# citation-impact -> the citing paper
+relation scilit-impact-citation sub alh-aboutness,
+    relates impact as note,
+    relates citing-paper as subject;
+
+# observation -> the paper it concerns
+relation scilit-observation-subject sub alh-aboutness,
+    relates observation as note,
+    relates observed-paper as subject;
+
+# synthesis note -> a grounded ontology concept it addresses
+relation scilit-synthesis-concept sub alh-aboutness,
+    relates synthesis as note,
+    relates concept as subject;
+
+# --- explicit plays for the specialized roles ---
+entity scilit-investigation
+    plays scilit-investigation-grounding:investigation,
+    plays scilit-investigation-phasing:investigation,
+    plays scilit-investigation-claim:investigation,
+    plays scilit-investigation-impact:investigation,
+    plays scilit-investigation-synthesis:investigation,
+    plays scilit-investigation-observation:investigation,
+    plays scilit-investigation-gap:investigation,
+    plays scilit-investigation-focus:investigation,
+    plays scilit-investigation-scope:investigation;
+
+entity scilit-investigation-phase
+    plays scilit-investigation-phasing:phase,
+    plays scilit-phase-faceting:phase;
+
+entity scilit-faceting-note plays scilit-phase-faceting:faceting;
+
+entity scilit-claim
+    plays scilit-investigation-claim:claim,
+    plays scilit-claim-evidence:claim;
+
+entity scilit-evidence
+    plays scilit-claim-evidence:evidence,
+    plays scilit-evidence-source:evidence;
+
+entity scilit-citation-impact
+    plays scilit-investigation-impact:impact,
+    plays scilit-impact-citation:impact;
+
+entity scilit-synthesis-note
+    plays scilit-investigation-synthesis:synthesis,
+    plays scilit-synthesis-concept:synthesis;
+
+entity scilit-observation
+    plays scilit-investigation-observation:observation,
+    plays scilit-observation-subject:observation;
+
+entity scilit-gap plays scilit-investigation-gap:gap;
+
+entity scilit-grounding-policy plays scilit-investigation-grounding:policy;
+
+entity scilit-paper
+    plays scilit-investigation-focus:focal-paper,
+    plays scilit-evidence-source:source-paper,
+    plays scilit-impact-citation:citing-paper,
+    plays scilit-observation-subject:observed-paper;
+
+entity scilit-corpus plays scilit-investigation-scope:corpus;
+
+entity scilit-ontology-term plays scilit-synthesis-concept:concept;
+
+
+# =============================================================================
 # END SCIENTIFIC LITERATURE NAMESPACE
 # =============================================================================

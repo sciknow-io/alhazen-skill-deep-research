@@ -1986,7 +1986,7 @@ def _ensure_phase_note(tx, inv_id, phase, content=None):
         f'insert $ph isa scilit-investigation-phase, has id "{ph_id}", '
         f'has name "{escape_string(phase.capitalize())} phase"{content_clause}, '
         f'has scilit-phase "{escape_string(phase)}", has created-at {ts}; '
-        f'(parent-note: $inv, child-note: $ph) isa alh-note-threading;'
+        f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing;'
     ).resolve()
     return ph_id, True
 
@@ -2025,7 +2025,7 @@ def _ensure_investigation_collection(driver, inv_id, inv_name=None):
             f'has description "{escape_string(desc)}", '
             f'has alh-is-extensional false, '
             f'has created-at {ts}; '
-            f'(note: $inv, subject: $c) isa alh-aboutness;'
+            f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope;'
         ).resolve()
         tx.commit()
     return coll_id
@@ -2063,7 +2063,7 @@ def cmd_create_investigation(args):
                     f'has scilit-investigation-status "{escape_string(status)}", '
                     f'has scilit-investigation-type "deep-dive", '
                     f'has created-at {ts}; '
-                    f'(note: $inv, subject: $p) isa alh-aboutness;'
+                    f'(investigation: $inv, focal-paper: $p) isa scilit-investigation-focus;'
                 ).resolve()
                 tx.commit()
             coll_id = _ensure_investigation_collection(driver, inv_id, args.name)
@@ -2101,7 +2101,7 @@ def cmd_create_investigation(args):
                 f'has scilit-investigation-status "{escape_string(status)}", '
                 f'has scilit-investigation-type "corpus", '
                 f'has created-at {ts}; '
-                f'(note: $inv, subject: $c) isa alh-aboutness;'
+                f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope;'
             ).resolve()
             tx.commit()
     print(json.dumps({
@@ -2716,7 +2716,7 @@ def cmd_link_analysis(args):
                 tx.query(
                     f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}"; '
                     f'$fn isa scilit-faceting-note, has id "{escape_string(args.faceting_note)}"; '
-                    f'insert (parent-note: $ph, child-note: $fn) isa alh-note-threading;'
+                    f'insert (phase: $ph, faceting: $fn) isa scilit-phase-faceting;'
                 ).resolve()
             tx.commit()
 
@@ -2843,7 +2843,7 @@ def cmd_add_claim(args):
                 f'has scilit-claim-type "{escape_string(args.type)}", '
                 f'has scilit-claim-statement "{escape_string(args.statement)}", '
                 f'has created-at {ts}; '
-                f'(parent-note: $inv, child-note: $cl) isa alh-note-threading;'
+                f'(investigation: $inv, claim: $cl) isa scilit-investigation-claim;'
             ).resolve()
             tx.commit()
     print(json.dumps({
@@ -2904,13 +2904,13 @@ def cmd_add_evidence(args):
                 f'has name "{escape_string(name)}", '
                 f'has scilit-evidence-type "{escape_string(args.evidence_type)}"{opt}, '
                 f'has created-at {ts}; '
-                f'(parent-note: $cl, child-note: $ev) isa alh-note-threading;'
+                f'(claim: $cl, evidence: $ev) isa scilit-claim-evidence;'
             ).resolve()
             if source_id:
                 tx.query(
                     f'match $ev isa scilit-evidence, has id "{ev_id}"; '
                     f'$src isa scilit-paper, has id "{escape_string(source_id)}"; '
-                    f'insert (note: $ev, subject: $src) isa alh-aboutness;'
+                    f'insert (evidence: $ev, source-paper: $src) isa scilit-evidence-source;'
                 ).resolve()
             tx.commit()
         if source_id:
@@ -2960,8 +2960,8 @@ def cmd_add_citation_impact(args):
                 f'has scilit-impact-type "{escape_string(args.impact_type)}", '
                 f'has scilit-impact-summary "{escape_string(args.impact_summary)}", '
                 f'has created-at {ts}; '
-                f'(parent-note: $inv, child-note: $imp) isa alh-note-threading; '
-                f'(note: $imp, subject: $cit) isa alh-aboutness;'
+                f'(investigation: $inv, impact: $imp) isa scilit-investigation-impact; '
+                f'(impact: $imp, citing-paper: $cit) isa scilit-impact-citation;'
             ).resolve()
             tx.commit()
         coll_id = _ensure_investigation_collection(driver, args.investigation)
