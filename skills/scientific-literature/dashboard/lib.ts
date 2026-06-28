@@ -378,10 +378,39 @@ export async function getInstance(id: string): Promise<InstanceDetail & { succes
   return runScilit(['show-instance', '--id', id]) as Promise<InstanceDetail & { success: boolean }>;
 }
 
-export async function listTemplates(match?: string): Promise<{ success: boolean; count: number; templates: Array<TemplateDetail & { process_count?: number; variable_count?: number; instance_count?: number }> }> {
+export type TemplateListItem = TemplateDetail & { process_count?: number; variable_count?: number; instance_count?: number };
+export async function listTemplates(match?: string): Promise<{ success: boolean; count: number; templates: TemplateListItem[] }> {
   const args = ['list-templates'];
   if (match) args.push('--match', match);
-  return runScilit(args) as Promise<{ success: boolean; count: number; templates: Array<TemplateDetail & { process_count?: number; variable_count?: number; instance_count?: number }> }>;
+  return runScilit(args) as Promise<{ success: boolean; count: number; templates: TemplateListItem[] }>;
+}
+
+// --- Ontology browse/search (curated OOEVV vocabulary) ---
+export interface OntologyQuality { id: string; name?: string; definition?: string; long_form?: string }
+export interface OntologyEntity { id: string; name?: string; kind?: string; definition?: string; long_form?: string }
+
+export async function listQualities(match?: string): Promise<{ success: boolean; count: number; qualities: OntologyQuality[] }> {
+  const args = ['list-qualities'];
+  if (match) args.push('--match', match);
+  return runScilit(args) as Promise<{ success: boolean; count: number; qualities: OntologyQuality[] }>;
+}
+
+export async function listEntities(match?: string): Promise<{ success: boolean; count: number; entities: OntologyEntity[] }> {
+  const args = ['list-entities'];
+  if (match) args.push('--match', match);
+  return runScilit(args) as Promise<{ success: boolean; count: number; entities: OntologyEntity[] }>;
+}
+
+// Combined ontology keyword search across templates (methods), qualities (measurands), entities (things).
+export interface OntologySearch {
+  query: string;
+  templates: TemplateListItem[];
+  qualities: OntologyQuality[];
+  entities: OntologyEntity[];
+}
+export async function searchOntology(q?: string): Promise<OntologySearch> {
+  const [t, ql, e] = await Promise.all([listTemplates(q), listQualities(q), listEntities(q)]);
+  return { query: q || '', templates: t.templates || [], qualities: ql.qualities || [], entities: e.entities || [] };
 }
 
 // --- KQED synthesis (read-only) ---

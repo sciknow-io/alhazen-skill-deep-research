@@ -49,6 +49,16 @@ export default function ScientificLiteraturePage() {
           >
             <Icon name="map" size={14} color={T.teal} /> embedding map
           </Link>
+          <Link
+            href="/scientific-literature/ontology"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontFamily: T.mono, fontSize: 12, color: T.olive, textDecoration: 'none',
+              border: `1px solid ${T.borderHi}`, borderRadius: 3, padding: '6px 12px',
+            }}
+          >
+            <Icon name="search" size={14} color={T.olive} /> methods &amp; ontology
+          </Link>
         </div>
       </header>
 
