@@ -75,8 +75,11 @@ attribute scilit-usage-type, value string;
 attribute scilit-investigation-status, value string;
 # scilit-phase: discovery|ingest|sensemaking|analysis|report
 attribute scilit-phase, value string;
+# Iteration/cycle index: an investigation and its stage notes can iterate over cycles.
+attribute scilit-iteration-number, value integer;
 
-# Investigation typing (deep-dive | conference-overview | corpus)
+# Investigation typing (retained, but the deep-dive/corpus distinction is retired:
+# a single-paper KQED run is now a scilit-paper-sensemaking note, not an investigation).
 attribute scilit-investigation-type, value string;
 
 # Deep-dive: claim / evidence / citation-impact
@@ -316,21 +319,26 @@ entity scilit-faceting-note sub alh-analysis-pipeline-note,
 # inherited from alh-note - SVL42 forbids redeclaring them, so these declare
 # `owns` only.
 
-# SCILIT-CLAIM - A single claim extracted from the focal paper.
-entity scilit-claim sub alh-analysis-note,
+# SCILIT-SYNTHESIZED-CLAIM - a claim reasoned ACROSS many papers (analysis).
+# Distinct from scilit-reported-claim (a claim asserted WITHIN one paper - sensemaking).
+# Backed by scilit-evidence warrants; threaded under the investigation.
+entity scilit-synthesized-claim sub alh-analysis-note,
     owns scilit-claim-type,
     owns scilit-claim-statement;
 
 
-# SCILIT-EVIDENCE - Evidence supporting a claim, threaded under the claim.
-# When the evidence comes from a cited paper, that paper is linked via
-# alh-aboutness (note:$evidence, subject:$source-paper); scilit-source-url is a
-# fallback locator for sources with no DOI.
+# SCILIT-SYNTHESIZED-GAP - a knowledge gap reasoned ACROSS many papers (analysis).
+# Distinct from scilit-reported-gap (a gap stated WITHIN one paper - sensemaking).
+entity scilit-synthesized-gap sub alh-analysis-note,
+    owns scilit-knowledge-goal;
+
+
+# SCILIT-EVIDENCE - a reasoned WARRANT (analysis). Its `content` is a summary that
+# argues over a set of reported-claims (reachable via scilit-evidence-grounds, and
+# through them their observations/hinges); `confidence` (inherited from alh-note) is
+# the concrete score for the synthesized-claim it supports (scilit-claim-evidence).
 entity scilit-evidence sub alh-analysis-note,
-    owns scilit-evidence-type,
-    owns scilit-experimental-design,
-    owns scilit-data-summary,
-    owns scilit-source-url;
+    owns scilit-evidence-type;
 
 
 # SCILIT-CITATION-IMPACT - How a citing paper received the focal paper's claims,
@@ -348,7 +356,7 @@ entity scilit-citation-impact sub alh-analysis-note,
 # SCILIT-INVESTIGATION - A named, dated, purpose-driven inquiry. Typed by
 # scilit-investigation-type: `corpus` (the default - aboutness subject is a
 # scilit-corpus) or `deep-dive` (aboutness subject is a single focal scilit-paper;
-# threads scilit-claim / scilit-citation-impact notes under it). Inherited `name`
+# threads synthesized-claim / citation-impact + per-paper sensemaking bundles). Inherited `name`
 # is the title, inherited `content` is the purpose/goal (markdown), inherited
 # `created-at` is the start date. scilit-investigation-status tracks lifecycle
 # position. Parent of its phase notes via alh-note-threading. The scilit analogue
@@ -359,7 +367,8 @@ entity scilit-citation-impact sub alh-analysis-note,
 entity scilit-investigation sub alh-note,
     owns scilit-investigation-status,
     owns scilit-investigation-type,
-    owns scilit-investigation-question;
+    owns scilit-investigation-question,
+    owns scilit-iteration-number;
 
 
 # SCILIT-INVESTIGATION-PHASE - A single phase note threaded under an investigation.
@@ -370,7 +379,8 @@ entity scilit-investigation sub alh-note,
 # from alh-note. One phase note per (investigation, phase) is enforced by the
 # record-phase upsert in the CLI.
 entity scilit-investigation-phase sub alh-note,
-    owns scilit-phase;
+    owns scilit-phase,
+    owns scilit-iteration-number;
 
 
 # Additive extension: core artifact type owns full-text kind
@@ -458,12 +468,21 @@ attribute scilit-obsolete, value boolean;
 attribute scilit-predicate-curie, value string;    # grounded relationship predicate (e.g. RO:0002212)
 attribute scilit-investigation-question, value string;
 attribute scilit-synthesis-stance, value string;   # consensus | contested | emerging
+# Grounding confidence (0..1) for a resolved term/curie - persisted alongside the curie so the
+# dashboard can show how trustworthy each grounding is.
+attribute scilit-grounding-confidence, value double;
+# Argumentative-zone (AZ / rhetorical role) of a claim within its paper's discourse, e.g.
+# background | own-claim | own-method | own-result | contrast | basis | implication.
+attribute scilit-rhetorical-role, value string;
 
-# Generic domain entity: a verbatim mention + kind hint, grounded later to a category + instance term.
+# Generic domain entity: a verbatim mention + kind hint, grounded to a category + instance term
+# (curie) with a confidence score.
 entity scilit-entity sub alh-domain-thing,
     owns scilit-entity-kind,
     owns scilit-grounding-label,
-    owns scilit-grounding-state;
+    owns scilit-grounding-state,
+    owns scilit-curie,
+    owns scilit-grounding-confidence;
     # plays alh-classification:classified-entity inherited from alh-identifiable-entity
 
 # Generic typed relationship: subject --predicate--> object. Bio's mechanistic-link specializes it.
@@ -503,17 +522,38 @@ entity kefed-variable sub alh-domain-thing,
     owns kefed-variable-role,
     owns kefed-value-set,
     owns kefed-efo-label,
+    owns scilit-curie,                 # grounded ontology concept for the variable (e.g. EFO:age, CL:...)
+    owns scilit-grounding-label,
+    owns scilit-grounding-state,
+    owns scilit-grounding-confidence,
     plays kefed-element:variable;
 
+# SCILIT-PAPER-SENSEMAKING - the per-paper sensemaking bundle: what one KQED run over a
+# single paper produces. Lives in an investigation's SENSEMAKING stage, is `about` exactly
+# one paper, and groups that paper's observations, reported-claims, reported-gaps and
+# mechanistic graph. (Replaces the old per-paper "deep-dive investigation".)
+entity scilit-paper-sensemaking sub alh-sensemaking-note;
+
 # OBSERVATION - a measurement-in-context; immutable, background-free (System 2, D node).
+# Tied to its KEfED design frame via kefed-observed-via (measurement = f(parameter|constant)).
 entity scilit-observation sub alh-sensemaking-note,
     owns scilit-knowledge-level,
     owns scilit-bio-scale,
     plays kefed-observed-via:observation,
     plays scilit-addresses:addressing-note;
 
-# GAP - a statement of ignorance (System 1, Q node); category via alh-classification -> Boguslav term.
-entity scilit-gap sub alh-sensemaking-note,
+# SCILIT-REPORTED-CLAIM - a claim asserted WITHIN one paper (sensemaking). Support is
+# per-claim: internal observations (scilit-claim-observation) and/or external citations
+# (scilit-hinge to another paper or its reported-claim).
+entity scilit-reported-claim sub alh-sensemaking-note,
+    owns scilit-claim-type,
+    owns scilit-claim-statement,
+    owns scilit-rhetorical-role,       # AZ / argumentative zone within the paper's discourse
+    plays scilit-addresses:addressing-note,
+    plays scilit-claim-mechanism:claim;
+
+# SCILIT-REPORTED-GAP - a gap stated WITHIN one paper (sensemaking).
+entity scilit-reported-gap sub alh-sensemaking-note,
     owns scilit-knowledge-goal,
     owns scilit-gap-provenance,
     plays scilit-addresses:gap;
@@ -524,130 +564,159 @@ entity scilit-bioentity sub scilit-entity,
     plays scilit-mechanistic-link:mech-target;
 
 # --- additive plays extensions on existing types ---
-entity scilit-claim plays scilit-hinge:hinging-claim,
-    plays scilit-hinge:hinged-to,
-    plays scilit-addresses:addressing-note;
-entity scilit-paper plays scilit-hinge:hinged-to;
 entity scilit-session plays scilit-hinge:hinged-to;
 entity alh-vocabulary-type plays kefed-licenses:licensing-type,
     plays kefed-licenses:licensed-warrant;
 
 
 # =============================================================================
-# INVESTIGATION STRUCTURAL RELATIONS - declarative typed wiring
-# Every structural edge inside an investigation is its own named relation, subtyping
-# the generic core relation (alh-note-threading / alh-aboutness) via role
-# specialization. Because each subtype instance is still matched by
-# `isa alh-note-threading` / `isa alh-aboutness`, existing polymorphic traversals and
-# deletes keep working unchanged; the generic relations stay available for ad-hoc,
-# unstructured (commented) note links. Entities declare explicit plays for each
-# specialized role - TypeDB does not infer plays through role specialization.
+# UNIFIED INVESTIGATION STRUCTURAL RELATIONS - declarative typed wiring
+# One investigation, staged (discovery|ingest|sensemaking|analysis|report) and iterable.
+# A single-paper KQED run is a scilit-paper-sensemaking bundle in the SENSEMAKING stage,
+# NOT its own investigation. Each structural edge is a named relation subtyping the generic
+# core relation (alh-note-threading / alh-aboutness) via role specialization, so subtype
+# instances still match the generic relations (ad-hoc threading stays available). Entities
+# declare explicit plays for each specialized role (TypeDB does not infer them).
 # =============================================================================
 
-# --- note->note threading subtypes (sub alh-note-threading) ---
+# --- stage spine + investigation-level edges (sub alh-note-threading / alh-aboutness) ---
 
-# investigation -> grounding-policy (the investigation's domain grounding profile)
+# investigation -> grounding-policy
 relation scilit-investigation-grounding sub alh-note-threading,
-    relates investigation as parent-note,
-    relates policy as child-note;
+    relates investigation as parent-note, relates policy as child-note;
 
-# investigation -> phase note (discovery|ingest|sensemaking|analysis|report)
+# investigation -> stage note (one per stage per iteration)
 relation scilit-investigation-phasing sub alh-note-threading,
-    relates investigation as parent-note,
-    relates phase as child-note;
+    relates investigation as parent-note, relates phase as child-note;
 
-# phase (analysis) -> faceting pipeline note
+# investigation -> corpus (its paper set)
+relation scilit-investigation-scope sub alh-aboutness,
+    relates investigation as note, relates corpus as subject;
+
+# investigation -> seed/focal paper (optional anchor, e.g. the review that launched the inquiry)
+relation scilit-investigation-focus sub alh-aboutness,
+    relates investigation as note, relates focal-paper as subject;
+
+# analysis (faceting pipeline) threaded under a stage note
 relation scilit-phase-faceting sub alh-note-threading,
-    relates phase as parent-note,
-    relates faceting as child-note;
+    relates phase as parent-note, relates faceting as child-note;
 
-# investigation -> claim
-relation scilit-investigation-claim sub alh-note-threading,
-    relates investigation as parent-note,
-    relates claim as child-note;
+# --- SENSEMAKING stage: per-paper bundles and their contents ---
 
-# claim -> evidence
+# sensemaking stage note -> per-paper bundle
+relation scilit-phase-sensemaking sub alh-note-threading,
+    relates phase as parent-note, relates sensemaking as child-note;
+
+# bundle -> the one paper it is about
+relation scilit-sensemaking-paper sub alh-aboutness,
+    relates sensemaking as note, relates paper as subject;
+
+# bundle -> observation
+relation scilit-sensemaking-observation sub alh-note-threading,
+    relates sensemaking as parent-note, relates observation as child-note;
+
+# bundle -> reported-claim
+relation scilit-sensemaking-reported-claim sub alh-note-threading,
+    relates sensemaking as parent-note, relates reported-claim as child-note;
+
+# bundle -> reported-gap
+relation scilit-sensemaking-reported-gap sub alh-note-threading,
+    relates sensemaking as parent-note, relates reported-gap as child-note;
+
+# bundle -> a mechanistic-link belonging to this paper's System-3 graph
+relation scilit-sensemaking-mechanism,
+    relates sensemaking, relates mechanism;
+
+# reported-claim -> the mechanistic-link(s) it asserts (so each mechanism traces to its claim)
+relation scilit-claim-mechanism,
+    relates claim, relates mechanism;
+
+# reported-claim -> observation (internal data support)
+relation scilit-claim-observation sub alh-note-threading,
+    relates reported-claim as parent-note, relates observation as child-note;
+
+# --- ANALYSIS stage: synthesized claims/gaps, evidence warrants, citation impact ---
+
+# investigation -> synthesized-claim
+relation scilit-investigation-synthesized-claim sub alh-note-threading,
+    relates investigation as parent-note, relates synthesized-claim as child-note;
+
+# investigation -> synthesized-gap
+relation scilit-investigation-synthesized-gap sub alh-note-threading,
+    relates investigation as parent-note, relates synthesized-gap as child-note;
+
+# synthesized-claim -> evidence warrant (argument + confidence)
 relation scilit-claim-evidence sub alh-note-threading,
-    relates claim as parent-note,
-    relates evidence as child-note;
+    relates synthesized-claim as parent-note, relates evidence as child-note;
 
-# investigation -> citation-impact
+# evidence warrant -> the reported-claims it argues over (its grounds; cardinality many)
+relation scilit-evidence-grounds sub alh-note-threading,
+    relates evidence as parent-note, relates ground-claim as child-note;
+
+# investigation -> citation-impact (forward-citation reception survey)
 relation scilit-investigation-impact sub alh-note-threading,
-    relates investigation as parent-note,
-    relates impact as child-note;
+    relates investigation as parent-note, relates impact as child-note;
 
 # investigation -> synthesis note
 relation scilit-investigation-synthesis sub alh-note-threading,
-    relates investigation as parent-note,
-    relates synthesis as child-note;
-
-# investigation -> observation (KQED System-2 measurement-in-context)
-relation scilit-investigation-observation sub alh-note-threading,
-    relates investigation as parent-note,
-    relates observation as child-note;
-
-# investigation -> gap (KQED System-1 statement of ignorance)
-relation scilit-investigation-gap sub alh-note-threading,
-    relates investigation as parent-note,
-    relates gap as child-note;
-
-# --- note->entity aboutness subtypes (sub alh-aboutness) ---
-
-# deep-dive investigation -> focal paper
-relation scilit-investigation-focus sub alh-aboutness,
-    relates investigation as note,
-    relates focal-paper as subject;
-
-# corpus investigation -> source corpus
-relation scilit-investigation-scope sub alh-aboutness,
-    relates investigation as note,
-    relates corpus as subject;
-
-# evidence -> the paper it is sourced from
-relation scilit-evidence-source sub alh-aboutness,
-    relates evidence as note,
-    relates source-paper as subject;
+    relates investigation as parent-note, relates synthesis as child-note;
 
 # citation-impact -> the citing paper
 relation scilit-impact-citation sub alh-aboutness,
-    relates impact as note,
-    relates citing-paper as subject;
+    relates impact as note, relates citing-paper as subject;
 
-# observation -> the paper it concerns
-relation scilit-observation-subject sub alh-aboutness,
-    relates observation as note,
-    relates observed-paper as subject;
-
-# synthesis note -> a grounded ontology concept it addresses
+# synthesis note -> a grounded ontology concept
 relation scilit-synthesis-concept sub alh-aboutness,
-    relates synthesis as note,
-    relates concept as subject;
+    relates synthesis as note, relates concept as subject;
 
 # --- explicit plays for the specialized roles ---
 entity scilit-investigation
     plays scilit-investigation-grounding:investigation,
     plays scilit-investigation-phasing:investigation,
-    plays scilit-investigation-claim:investigation,
-    plays scilit-investigation-impact:investigation,
-    plays scilit-investigation-synthesis:investigation,
-    plays scilit-investigation-observation:investigation,
-    plays scilit-investigation-gap:investigation,
+    plays scilit-investigation-scope:investigation,
     plays scilit-investigation-focus:investigation,
-    plays scilit-investigation-scope:investigation;
+    plays scilit-investigation-synthesized-claim:investigation,
+    plays scilit-investigation-synthesized-gap:investigation,
+    plays scilit-investigation-impact:investigation,
+    plays scilit-investigation-synthesis:investigation;
 
 entity scilit-investigation-phase
     plays scilit-investigation-phasing:phase,
-    plays scilit-phase-faceting:phase;
+    plays scilit-phase-faceting:phase,
+    plays scilit-phase-sensemaking:phase;
 
-entity scilit-faceting-note plays scilit-phase-faceting:faceting;
+entity scilit-paper-sensemaking
+    plays scilit-phase-sensemaking:sensemaking,
+    plays scilit-sensemaking-paper:sensemaking,
+    plays scilit-sensemaking-observation:sensemaking,
+    plays scilit-sensemaking-reported-claim:sensemaking,
+    plays scilit-sensemaking-reported-gap:sensemaking,
+    plays scilit-sensemaking-mechanism:sensemaking;
 
-entity scilit-claim
-    plays scilit-investigation-claim:claim,
-    plays scilit-claim-evidence:claim;
+entity scilit-observation
+    plays scilit-sensemaking-observation:observation,
+    plays scilit-claim-observation:observation;
+
+entity scilit-reported-claim
+    plays scilit-sensemaking-reported-claim:reported-claim,
+    plays scilit-claim-observation:reported-claim,
+    plays scilit-evidence-grounds:ground-claim,
+    plays scilit-hinge:hinging-claim,
+    plays scilit-hinge:hinged-to;
+
+entity scilit-reported-gap
+    plays scilit-sensemaking-reported-gap:reported-gap;
+
+entity scilit-synthesized-claim
+    plays scilit-investigation-synthesized-claim:synthesized-claim,
+    plays scilit-claim-evidence:synthesized-claim;
+
+entity scilit-synthesized-gap
+    plays scilit-investigation-synthesized-gap:synthesized-gap;
 
 entity scilit-evidence
     plays scilit-claim-evidence:evidence,
-    plays scilit-evidence-source:evidence;
+    plays scilit-evidence-grounds:evidence;
 
 entity scilit-citation-impact
     plays scilit-investigation-impact:impact,
@@ -657,23 +726,202 @@ entity scilit-synthesis-note
     plays scilit-investigation-synthesis:synthesis,
     plays scilit-synthesis-concept:synthesis;
 
-entity scilit-observation
-    plays scilit-investigation-observation:observation,
-    plays scilit-observation-subject:observation;
-
-entity scilit-gap plays scilit-investigation-gap:gap;
+entity scilit-faceting-note plays scilit-phase-faceting:faceting;
 
 entity scilit-grounding-policy plays scilit-investigation-grounding:policy;
 
+relation scilit-mechanistic-link plays scilit-sensemaking-mechanism:mechanism,
+    plays scilit-claim-mechanism:mechanism;
+
 entity scilit-paper
     plays scilit-investigation-focus:focal-paper,
-    plays scilit-evidence-source:source-paper,
+    plays scilit-sensemaking-paper:paper,
     plays scilit-impact-citation:citing-paper,
-    plays scilit-observation-subject:observed-paper;
+    plays scilit-hinge:hinged-to;
 
 entity scilit-corpus plays scilit-investigation-scope:corpus;
 
 entity scilit-ontology-term plays scilit-synthesis-concept:concept;
+
+
+# =============================================================================
+# OOEVV + KEfED PROTOCOL-GRAPH  (Burns & Turner 2013, Ontology of Experimental
+# Variables and Values). A measurement is a generic QUALITY produced by a
+# hierarchical assay PROTOCOL; specificity comes from PARAMETERS bound at process
+# steps whose values target curated ENTITIES. Vocabulary (quality/entity/process)
+# is curated LOCALLY and reusable across papers; external curies are optional hooks.
+# =============================================================================
+
+# --- attributes ---
+attribute ooevv-definition, value string;   # curated human definition (dashboard term-expansion)
+attribute ooevv-unit, value string;         # numeric scale unit
+attribute ooevv-min, value double;
+attribute ooevv-max, value double;
+attribute ooevv-allowed-value, value string;  # nominal/binary allowed value
+attribute ooevv-named-rank, value string;      # ordinal rank label (in order)
+
+# --- relations (variable structure) ---
+relation ooevv-measures,                       # ExperimentalVariable measures a Quality
+    relates measured-variable, relates quality;
+relation ooevv-has-scale,                      # ExperimentalVariable has exactly one MeasurementScale
+    relates scaled-variable, relates scale;
+relation ooevv-scale-parts,                    # CompositeScale hasParts sub-variables
+    relates composite-scale, relates part-variable;
+
+# --- relations (protocol graph) ---
+relation ooevv-process-decomposition,          # a process decomposes into sub-processes (arbitrary depth)
+    relates parent-process, relates sub-process;
+relation ooevv-process-input,                  # material flow: entity consumed by a process
+    relates input-entity, relates consuming-process;
+relation ooevv-process-output,                 # material flow: entity produced by a process
+    relates producing-process, relates output-entity;
+relation ooevv-parameter-binding,              # independent variable set AT a process step (the KEfED dependency)
+    relates binding-process, relates bound-parameter;
+relation ooevv-parameter-target,               # a parameter's value targets a curated entity (specificity)
+    relates targeting-parameter, relates target-entity;
+relation ooevv-produced-by,                    # measurement produced by the terminal process
+    relates produced-measurement, relates terminal-process;
+relation ooevv-set-process,                    # element-set groups its processes
+    relates container, relates contained-process;
+relation ooevv-set-entity,                     # element-set groups its entities
+    relates container, relates contained-entity;
+relation ooevv-bundle-experiment,              # a paper's sensemaking bundle groups its SEPARATE experiments
+    relates bundle, relates experiment;        # (one element-set / protocol graph per distinct experiment)
+
+# --- entities ---
+# QUALITY - curated generic measurand (concentration, signal-intensity, viability...). Reusable vocab.
+entity ooevv-quality sub alh-vocabulary-type,
+    owns ooevv-definition,
+    owns scilit-curie,                  # optional external hook
+    owns scilit-grounding-confidence,
+    plays ooevv-measures:quality;
+
+# PROCESS - a protocol step; hierarchical, consumes/produces entities, binds parameters.
+entity ooevv-process sub alh-domain-thing,
+    owns ooevv-definition,
+    plays ooevv-process-decomposition:parent-process,
+    plays ooevv-process-decomposition:sub-process,
+    plays ooevv-process-input:consuming-process,
+    plays ooevv-process-output:producing-process,
+    plays ooevv-parameter-binding:binding-process,
+    plays ooevv-produced-by:terminal-process,
+    plays ooevv-set-process:contained-process;
+entity ooevv-assay sub ooevv-process;                 # a measurement-producing assay (qPCR, western blot)
+entity ooevv-material-processing sub ooevv-process;   # a sample-prep / transformation of material
+entity ooevv-data-transformation sub ooevv-process;   # an analysis/computation step
+
+# SCALE - the computational type of a variable's values (one per variable).
+entity ooevv-scale sub alh-domain-thing,
+    owns ooevv-unit,
+    plays ooevv-has-scale:scale;
+entity ooevv-nominal-scale sub ooevv-scale, owns ooevv-allowed-value @card(0..);
+entity ooevv-binary-scale sub ooevv-scale, owns ooevv-allowed-value @card(0..);
+entity ooevv-ordinal-scale sub ooevv-scale, owns ooevv-named-rank @card(0..);
+entity ooevv-numeric-scale sub ooevv-scale, owns ooevv-min, owns ooevv-max;
+entity ooevv-file-scale sub ooevv-scale;
+entity ooevv-composite-scale sub ooevv-scale,
+    plays ooevv-scale-parts:composite-scale;
+
+# --- additive plays on existing types ---
+# kefed-variable IS the OOEVV ExperimentalVariable (already owns kefed-variable-role + grounding hooks).
+entity kefed-variable
+    plays ooevv-measures:measured-variable,
+    plays ooevv-has-scale:scaled-variable,
+    plays ooevv-scale-parts:part-variable,
+    plays ooevv-parameter-binding:bound-parameter,
+    plays ooevv-parameter-target:targeting-parameter,
+    plays ooevv-produced-by:produced-measurement,
+    owns ooevv-definition;
+# kefed-model IS the OOEVV ElementSet = ONE experiment (a paper may have several).
+entity kefed-model
+    plays ooevv-set-process:container,
+    plays ooevv-set-entity:container,
+    plays ooevv-bundle-experiment:experiment;
+# scilit-paper-sensemaking (the per-paper bundle) groups the paper's separate experiments.
+entity scilit-paper-sensemaking
+    plays ooevv-bundle-experiment:bundle;
+# scilit-entity is the curated material/specificity entity (already owns entity-kind + grounding hooks).
+entity scilit-entity
+    plays ooevv-process-input:input-entity,
+    plays ooevv-process-output:output-entity,
+    plays ooevv-parameter-target:target-entity,
+    plays ooevv-set-entity:contained-entity,
+    owns ooevv-definition;
+
+
+# =============================================================================
+# KEfED TEMPLATE / INSTANCE / DATA layer - curation by recognize-reuse-fill
+# A kefed-template is a REUSABLE experiment design (protocol graph + variable
+# definitions + typed slots). A kefed-instance is one paper's EXECUTION of a
+# template: it fills the slots with curated entities and carries the data rows
+# (a spreadsheet linking independent-variable values to the measured dependent
+# value). Curating a new paper = recognize the template, reuse it, fill it.
+# =============================================================================
+
+# --- attributes ---
+attribute kefed-slot-role, value string;   # target-gene | normalization-control | grouping | treatment | ...
+attribute kefed-slot-kind, value string;   # gene | chemical | cell-type | antibody | ...
+attribute ooevv-cell-value, value string;  # the value a variable took in a data row (independent or measured)
+attribute ooevv-cell-number, value double; # numeric form of the cell value (for aggregation), optional
+
+# --- relations (template layer) ---
+relation kefed-template-slot,              # a template declares its typed slots
+    relates template, relates slot;
+relation ooevv-param-slot,                 # a template variable (parameter/measurement) references a slot
+    relates slotted-variable, relates slot;
+
+# --- relations (instance layer) ---
+relation ooevv-instance-of,                # an instance is an execution of a template
+    relates instance, relates template;
+relation ooevv-slot-binding,               # an instance fills a template slot with a curated entity
+    relates instance, relates slot, relates filler;
+relation ooevv-instance-datum,             # an instance groups its data rows
+    relates instance, relates datum;
+relation ooevv-cell,                       # one cell = the value a template variable took in a datum row
+    relates datum, relates cell-variable,
+    owns ooevv-cell-value, owns ooevv-cell-number;
+relation ooevv-datum-observation,          # coexistence: a data row links to its free-text observation (provenance)
+    relates datum, relates observation;
+
+# --- entities ---
+# TEMPLATE - reusable experiment design; groups its processes + variable definitions, declares slots.
+entity kefed-template sub alh-artifact,
+    owns ooevv-definition,
+    plays kefed-element:model,              # groups its reusable design variables
+    plays ooevv-set-process:container,
+    plays ooevv-set-entity:container,
+    plays kefed-template-slot:template,
+    plays ooevv-instance-of:template;
+
+# SLOT - a typed placeholder in a template, filled per-instance (target-gene, normalization-control...).
+entity kefed-slot sub alh-domain-thing,
+    owns kefed-slot-role,
+    owns kefed-slot-kind,
+    plays kefed-template-slot:slot,
+    plays ooevv-param-slot:slot,
+    plays ooevv-slot-binding:slot;
+
+# INSTANCE - one paper's execution of a template; fills slots + carries data rows; grouped under a bundle.
+entity kefed-instance sub alh-artifact,
+    plays ooevv-instance-of:instance,
+    plays ooevv-slot-binding:instance,
+    plays ooevv-instance-datum:instance,
+    plays ooevv-bundle-experiment:experiment;
+
+# DATUM - one data row of an instance; cells hold per-variable values; links to a provenance observation.
+entity ooevv-datum sub alh-domain-thing,
+    plays ooevv-instance-datum:datum,
+    plays ooevv-cell:datum,
+    plays ooevv-datum-observation:datum;
+
+# --- additive plays on existing types ---
+# a template variable may reference a slot, and may take a per-row value in a data cell
+entity kefed-variable plays ooevv-param-slot:slotted-variable,
+    plays ooevv-cell:cell-variable;
+# curated entities fill instance slots
+entity scilit-entity plays ooevv-slot-binding:filler;
+# the free-text observation a data row links to for provenance/coexistence
+entity scilit-observation plays ooevv-datum-observation:observation;
 
 
 # =============================================================================

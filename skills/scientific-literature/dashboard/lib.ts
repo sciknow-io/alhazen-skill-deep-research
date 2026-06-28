@@ -34,7 +34,7 @@ async function runScilit(args: string[]): Promise<unknown> {
     {
       cwd: CWD,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TYPEDB_DATABASE: 'alh_deep_research' },
+      env: { ...process.env, TYPEDB_DATABASE: process.env.TYPEDB_DATABASE || 'alh_deep_research_ng' },
     }
   );
   return JSON.parse(stdout);
@@ -48,7 +48,7 @@ async function runNotebook(args: string[]): Promise<unknown> {
     {
       cwd: CWD,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TYPEDB_DATABASE: 'alh_deep_research' },
+      env: { ...process.env, TYPEDB_DATABASE: process.env.TYPEDB_DATABASE || 'alh_deep_research_ng' },
     }
   );
   return JSON.parse(stdout);
@@ -148,29 +148,40 @@ export interface InvestigationSummary {
   phase_count?: number;
 }
 
+export interface BundleSummary {
+  id: string;
+  name?: string;
+  paper?: InvestigationPaperRef | null;
+  observation_count?: number;
+  reported_claim_count?: number;
+  reported_gap_count?: number;
+}
+
 export interface InvestigationPhase {
   id: string;
   name?: string;
   content?: string;
   phase: string;
+  iteration?: number;
   'created-at'?: string;
   faceting_notes?: Array<{ id: string; name?: string }>;
+  bundles?: BundleSummary[];        // sensemaking stage only
 }
 
-export interface EvidenceNode {
+// An evidence WARRANT: reasoned argument + confidence, grounded in reported-claims.
+export interface WarrantNode {
   id: string;
+  argument?: string;
+  confidence?: number;
   evidence_type?: string;
-  experimental_design?: string;
-  data_summary?: string;
-  source_url?: string;
-  source_paper?: InvestigationPaperRef | null;
+  grounds?: Array<{ id: string; statement?: string }>;
 }
 
-export interface ClaimNode {
+export interface SynthesizedClaimNode {
   id: string;
   type?: string;
   statement?: string;
-  evidence?: EvidenceNode[];
+  evidence?: WarrantNode[];
 }
 
 export interface ImpactNode {
@@ -187,14 +198,98 @@ export interface InvestigationDetail {
   purpose?: string;
   status?: string;
   type?: string;
+  iteration?: number;
   'created-at'?: string;
+  grounding_policy?: unknown;
   corpus?: InvestigationCorpusRef | null;
   focal_paper?: InvestigationPaperRef | null;
   phases: InvestigationPhase[];
-  claims?: ClaimNode[];
+  synthesized_claims?: SynthesizedClaimNode[];
   citation_impacts?: ImpactNode[];
   papers?: InvestigationPaperRef[];
   collection?: { id: string; name?: string; count?: number };
+}
+
+// --- Per-paper sensemaking bundle detail ---
+export interface KefedVariable { name?: string; role?: string; values?: string }
+export interface KefedFrame { id: string; name?: string; variables?: KefedVariable[] }
+export interface ObservationNode {
+  id: string;
+  name?: string;
+  content?: string;
+  knowledge_level?: string;
+  bio_scale?: string;
+  kefed_frame?: KefedFrame | null;
+}
+export interface ReportedClaimNode {
+  id: string;
+  type?: string;
+  statement?: string;
+  cites?: InvestigationPaperRef[];
+}
+export interface ReportedGapNode { id: string; name?: string; goal?: string }
+// --- KEfED / OOEVV protocol graph ---
+export interface OoevvScale { id: string; type?: string; unit?: string; values?: string[] }
+export interface OoevvQualityRef { quality?: string; definition?: string }
+export interface OoevvEntityRef { id: string; name?: string; definition?: string }
+export interface OoevvVarBrief {
+  id: string;
+  name?: string;
+  role?: string;
+  quality?: OoevvQualityRef;
+  scale?: OoevvScale;
+  target_entity?: OoevvEntityRef | null;
+}
+export interface OoevvProcess {
+  id: string;
+  name?: string;
+  type?: string;            // assay | material-processing | data-transformation
+  parent?: string | null;
+  definition?: string;
+  inputs?: string[];
+  outputs?: string[];
+  parameters?: OoevvVarBrief[];
+  measurements?: OoevvVarBrief[];
+}
+export interface ExperimentGraph { id: string; name?: string; experiment?: { id: string; processes?: OoevvProcess[] } }
+
+// --- KEfED templates / instances / data spreadsheet ---
+export interface OoevvSlot { id: string; role?: string; kind?: string }
+export interface TemplateDetail {
+  id: string;
+  name?: string;
+  definition?: string;
+  slots?: OoevvSlot[];
+  variables?: OoevvVarBrief[];
+  graph?: { id: string; processes?: OoevvProcess[] };
+}
+export interface SlotBinding { slot: string; role?: string; kind?: string; entity_id: string; entity?: string }
+export interface DatumCell { variable: string; name?: string; role?: string; value?: string; number?: number }
+export interface DatumRow {
+  id: string;
+  cells: DatumCell[];
+  observation?: { id: string; name?: string; content?: string };
+}
+export interface InstanceDetail {
+  id: string;
+  name?: string;
+  template?: { id: string; name?: string } | null;
+  template_detail?: TemplateDetail | null;
+  bindings?: SlotBinding[];
+  data?: DatumRow[];
+}
+
+export interface BundleDetail {
+  success: boolean;
+  id: string;
+  name?: string;
+  paper?: InvestigationPaperRef | null;
+  observations?: ObservationNode[];
+  reported_claims?: ReportedClaimNode[];
+  reported_gaps?: ReportedGapNode[];
+  mechanisms?: Array<{ source?: string; target?: string; type?: string }>;
+  experiments?: ExperimentGraph[];
+  instances?: InstanceDetail[];
 }
 
 // --- Read endpoints (scilit CLI) ----------------------------------------------
@@ -258,6 +353,24 @@ export async function listInvestigations(collectionId?: string): Promise<{ inves
 
 export async function getInvestigation(id: string): Promise<InvestigationDetail> {
   return runScilit(['show-investigation', '--id', id]) as Promise<InvestigationDetail>;
+}
+
+export async function getBundle(id: string): Promise<BundleDetail> {
+  return runScilit(['show-bundle', '--id', id]) as Promise<BundleDetail>;
+}
+
+export async function getTemplate(id: string): Promise<TemplateDetail & { success: boolean }> {
+  return runScilit(['show-template', '--id', id]) as Promise<TemplateDetail & { success: boolean }>;
+}
+
+export async function getInstance(id: string): Promise<InstanceDetail & { success: boolean }> {
+  return runScilit(['show-instance', '--id', id]) as Promise<InstanceDetail & { success: boolean }>;
+}
+
+export async function listTemplates(match?: string): Promise<{ success: boolean; count: number; templates: Array<TemplateDetail & { process_count?: number; variable_count?: number; instance_count?: number }> }> {
+  const args = ['list-templates'];
+  if (match) args.push('--match', match);
+  return runScilit(args) as Promise<{ success: boolean; count: number; templates: Array<TemplateDetail & { process_count?: number; variable_count?: number; instance_count?: number }> }>;
 }
 
 // --- KQED synthesis (read-only) ---
