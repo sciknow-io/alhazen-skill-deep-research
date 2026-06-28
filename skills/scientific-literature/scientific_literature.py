@@ -3583,6 +3583,17 @@ def cmd_show_bundle(args):
 # OOEVV / KEfED protocol-graph curation verbs
 # =============================================================================
 
+def _require_definition(args, kind):
+    """Curation standard: a NEW OOEVV element must carry a plain-English, undergraduate-level
+    definition. Reusing an existing term skips this (no creation happens)."""
+    if not (getattr(args, "definition", None) or "").strip():
+        print(json.dumps({"success": False, "error": (
+            f"--definition is required to CREATE a new {kind} (curation standard: an "
+            f"undergraduate-level explanation of what it is and what it does). "
+            f"If this term already exists, reuse it instead.")}))
+        sys.exit(1)
+
+
 def cmd_ensure_quality(args):
     """Find-or-create a reusable curated ooevv-quality (the generic measurand) by name."""
     with get_driver() as driver:
@@ -3593,6 +3604,7 @@ def cmd_ensure_quality(args):
         if ex:
             print(json.dumps({"success": True, "quality_id": ex[0]["id"], "reused": True}))
             return
+        _require_definition(args, "quality")
         qid = generate_id("scqual")
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
         lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
@@ -3612,6 +3624,7 @@ def cmd_ensure_entity(args):
         if ex:
             print(json.dumps({"success": True, "entity_id": ex[0]["id"], "reused": True}))
             return
+        _require_definition(args, "entity")
         eid = generate_id("scent")
         ts = get_timestamp()
         kind = f', has scilit-entity-kind "{escape_string(args.kind)}"' if getattr(args, "kind", None) else ""
@@ -3650,6 +3663,7 @@ def cmd_add_process(args):
              "data-transformation": "ooevv-data-transformation"}
     if args.type not in types:
         print(json.dumps({"success": False, "error": f"--type must be one of {list(types)}"})); sys.exit(1)
+    _require_definition(args, "process")
     proc_id = generate_id("scproc")
     ts = get_timestamp()
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
@@ -3715,6 +3729,7 @@ def cmd_add_variable(args):
                    "file": "ooevv-file-scale", "composite": "ooevv-composite-scale"}
     if args.scale_type not in scale_types:
         print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(scale_types)}"})); sys.exit(1)
+    _require_definition(args, "variable")
     var_id = generate_id("scvar"); scale_id = generate_id("scscale"); ts = get_timestamp()
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
     lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
@@ -3795,6 +3810,7 @@ def cmd_ensure_template(args):
         if ex:
             print(json.dumps({"success": True, "template_id": ex[0]["id"], "reused": True}))
             return
+        _require_definition(args, "template")
         tid = generate_id("sctpl"); ts = get_timestamp()
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
         lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
@@ -3813,6 +3829,7 @@ def cmd_add_slot(args):
                               f'fetch {{ "id": $t.id }};').resolve())
             if not t:
                 print(json.dumps({"success": False, "error": "Template not found"})); sys.exit(1)
+            _require_definition(args, "slot")
             sid = generate_id("scslot"); ts = get_timestamp()
             name = getattr(args, "name", None) or args.role
             kind = f', has kefed-slot-kind "{escape_string(args.kind)}"' if getattr(args, "kind", None) else ""
@@ -3899,6 +3916,55 @@ def cmd_list_entities(args):
     es = _match_filter([{k: v for k, v in r.items() if v is not None} for r in rows],
                        getattr(args, "match", None), "name", "definition")
     print(json.dumps({"success": True, "count": len(es), "entities": es}, indent=2))
+
+
+def _looks_abbreviated(token):
+    """Heuristic: a name token that reads like an abbreviation/symbol needing a long-form
+    (>=2 uppercase letters, or a digit mixed with letters), e.g. HSC, LSK, qPCR, 5FU, SOD2."""
+    if token.isdigit() or len(token) > 12:
+        return False
+    ncaps = sum(1 for c in token if c.isupper())
+    has_digit = any(c.isdigit() for c in token)
+    has_alpha = any(c.isalpha() for c in token)
+    return ncaps >= 2 or (has_digit and has_alpha)
+
+
+def cmd_audit_terms(args):
+    """LINTER for the curation standard. Scans OOEVV elements and flags: terms missing a
+    definition, definitions that are too short, and names with an abbreviation but no
+    long-form. Read-only; fix flagged items by re-authoring with --definition/--long-form."""
+    import re
+    TYPES = [("ooevv-quality", "quality"), ("scilit-entity", "entity"),
+             ("ooevv-process", "process"), ("kefed-variable", "variable"),
+             ("kefed-template", "template"), ("kefed-slot", "slot")]
+    tok_re = re.compile(r"[A-Za-z0-9+]+")
+    minlen = int(getattr(args, "min_def_len", None) or 40)
+    only = getattr(args, "type", None)
+    report = {"missing_definition": [], "short_definition": [], "unexpanded_abbreviation": []}
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            for tlabel, short in TYPES:
+                if only and only != short:
+                    continue
+                rows = list(tx.query(
+                    f'match $x isa {tlabel}, has name $n; '
+                    f'fetch {{ "id": $x.id, "name": $n, "def": $x.ooevv-definition, '
+                    f'"lf": $x.ooevv-long-form }};').resolve())
+                for r in rows:
+                    item = {"type": short, "id": r["id"], "name": r.get("name")}
+                    d = (r.get("def") or "").strip()
+                    lf = (r.get("lf") or "").strip()
+                    if not d:
+                        report["missing_definition"].append(item)
+                        continue
+                    if len(d) < minlen:
+                        report["short_definition"].append({**item, "len": len(d)})
+                    abbrevs = sorted({t for t in tok_re.findall(r.get("name") or "") if _looks_abbreviated(t)})
+                    if abbrevs and not lf:
+                        report["unexpanded_abbreviation"].append({**item, "abbreviations": abbrevs})
+    summary = {k: len(v) for k, v in report.items()}
+    summary["total_flagged"] = sum(summary.values())
+    print(json.dumps({"success": True, "min_def_len": minlen, "summary": summary, **report}, indent=2))
 
 
 def cmd_instantiate_template(args):
@@ -4467,6 +4533,13 @@ def main():
     p = subparsers.add_parser("list-entities", help="RECOGNITION/gap-check: list curated entities")
     p.add_argument("--match", help="Case-insensitive substring filter on name/definition")
 
+    p = subparsers.add_parser("audit-terms",
+        help="LINTER: flag OOEVV terms with missing/short definitions or unexpanded abbreviations")
+    p.add_argument("--type", choices=["quality", "entity", "process", "variable", "template", "slot"],
+        help="Restrict the audit to one element type")
+    p.add_argument("--min-def-len", dest="min_def_len", type=int,
+        help="Minimum acceptable definition length in characters (default 40)")
+
     p = subparsers.add_parser("instantiate-template", help="FILL: create an instance of a template under a bundle")
     p.add_argument("--bundle", required=True, help="Bundle id (scsense-...)")
     p.add_argument("--template", required=True, help="Template id (sctpl-...)")
@@ -4628,6 +4701,7 @@ def main():
         "list-templates": cmd_list_templates,
         "list-qualities": cmd_list_qualities,
         "list-entities": cmd_list_entities,
+        "audit-terms": cmd_audit_terms,
         "instantiate-template": cmd_instantiate_template,
         "bind-slot": cmd_bind_slot,
         "add-datum": cmd_add_datum,
