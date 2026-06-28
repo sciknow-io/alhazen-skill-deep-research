@@ -192,12 +192,12 @@ def add_observation(driver, investigation, kefed_model, statement, knowledge_lev
               f'insert $o isa scilit-observation, has id "{oid}", has name "{escape_string(statement[:60])}", '
               f'has content "{escape_string(statement)}", has scilit-knowledge-level "{escape_string(knowledge_level)}", '
               f'has scilit-bio-scale "{escape_string(bio_scale)}", has created-at {ts}; '
-              f'(parent-note: $inv, child-note: $o) isa alh-note-threading;')
+              f'(investigation: $inv, observation: $o) isa scilit-investigation-observation;')
     w(driver, f'match $o isa scilit-observation, has id "{oid}"; $m isa kefed-model, has id "{escape_string(kefed_model)}"; '
               f'insert (observation: $o, model: $m) isa kefed-observed-via;')
     if about:
         w(driver, f'match $o isa scilit-observation, has id "{oid}"; $p isa scilit-paper, has id "{escape_string(about)}"; '
-                  f'insert (note: $o, subject: $p) isa alh-aboutness;')
+                  f'insert (observation: $o, observed-paper: $p) isa scilit-observation-subject;')
     return oid
 
 
@@ -210,7 +210,7 @@ def add_gap(driver, investigation, category_term, knowledge_goal, provenance, st
                   f'insert $g isa scilit-gap, has id "{gid}", has name "{escape_string(statement[:60])}", '
                   f'has content "{escape_string(statement)}", has scilit-knowledge-goal "{escape_string(knowledge_goal)}", '
                   f'has scilit-gap-provenance "{escape_string(provenance)}", has created-at {ts}; '
-                  f'(parent-note: $inv, child-note: $g) isa alh-note-threading;')
+                  f'(investigation: $inv, gap: $g) isa scilit-investigation-gap;')
         classify(driver, gid, category_term, provenance="Boguslav et al. 2023", confidence=0.85)
     return gid
 
@@ -255,13 +255,13 @@ def add_synthesis_note(driver, inv_id, statement, stance, concept_curies=None):
     w(driver, f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
               f'insert $s isa scilit-synthesis-note, has id "{sid}", has name "{escape_string(statement[:60])}", '
               f'has content "{escape_string(statement)}", has scilit-synthesis-stance "{escape_string(stance)}", '
-              f'has created-at {ts}; (parent-note: $inv, child-note: $s) isa alh-note-threading;')
+              f'has created-at {ts}; (investigation: $inv, synthesis: $s) isa scilit-investigation-synthesis;')
     for curie in (concept_curies or []):
         hit = r(driver, f'match $t isa scilit-ontology-term, has scilit-curie "{escape_string(curie)}"; fetch {{"id": $t.id}};')
         if hit:
             w(driver, f'match $s isa scilit-synthesis-note, has id "{sid}"; '
                       f'$t isa scilit-ontology-term, has id "{escape_string(hit[0]["id"])}"; '
-                      f'insert (note: $s, subject: $t) isa alh-aboutness;')
+                      f'insert (synthesis: $s, concept: $t) isa scilit-synthesis-concept;')
     return sid
 
 
@@ -332,7 +332,7 @@ def set_grounding_policy(driver, inv_id, policy):
     w(driver, f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
               f'insert $p isa scilit-grounding-policy, has id "{newid}", has name "grounding-policy", '
               f'has content "{escape_string(body)}", has created-at {ts}; '
-              f'(parent-note: $inv, child-note: $p) isa alh-note-threading;')
+              f'(investigation: $inv, policy: $p) isa scilit-investigation-grounding;')
     return newid
 
 
