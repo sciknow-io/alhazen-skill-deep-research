@@ -168,13 +168,15 @@ export interface InvestigationPhase {
   bundles?: BundleSummary[];        // sensemaking stage only
 }
 
-// An evidence WARRANT: reasoned argument + confidence, grounded in reported-claims.
+// An evidence WARRANT: reasoned argument + confidence, grounded in reported-claims
+// and/or in the structured template INSTANCES (their data rows) it rests on.
 export interface WarrantNode {
   id: string;
   argument?: string;
   confidence?: number;
   evidence_type?: string;
   grounds?: Array<{ id: string; statement?: string }>;
+  grounding_instances?: Array<{ id: string; name?: string; bundle?: string; paper?: string }>;
 }
 
 export interface SynthesizedClaimNode {
@@ -229,13 +231,16 @@ export interface ReportedClaimNode {
 }
 export interface ReportedGapNode { id: string; name?: string; goal?: string }
 // --- KEfED / OOEVV protocol graph ---
+// Curation standard: elements carry a plain-English definition + (for abbreviations) a long_form.
 export interface OoevvScale { id: string; type?: string; unit?: string; values?: string[] }
-export interface OoevvQualityRef { quality?: string; definition?: string }
-export interface OoevvEntityRef { id: string; name?: string; definition?: string }
+export interface OoevvQualityRef { quality?: string; definition?: string; long_form?: string }
+export interface OoevvEntityRef { id: string; name?: string; definition?: string; long_form?: string }
 export interface OoevvVarBrief {
   id: string;
   name?: string;
   role?: string;
+  definition?: string;
+  long_form?: string;
   quality?: OoevvQualityRef;
   scale?: OoevvScale;
   target_entity?: OoevvEntityRef | null;
@@ -246,6 +251,7 @@ export interface OoevvProcess {
   type?: string;            // assay | material-processing | data-transformation
   parent?: string | null;
   definition?: string;
+  long_form?: string;
   inputs?: string[];
   outputs?: string[];
   parameters?: OoevvVarBrief[];
@@ -254,16 +260,21 @@ export interface OoevvProcess {
 export interface ExperimentGraph { id: string; name?: string; experiment?: { id: string; processes?: OoevvProcess[] } }
 
 // --- KEfED templates / instances / data spreadsheet ---
-export interface OoevvSlot { id: string; role?: string; kind?: string }
+export interface OoevvSlot { id: string; role?: string; kind?: string; definition?: string; long_form?: string }
 export interface TemplateDetail {
   id: string;
   name?: string;
   definition?: string;
+  long_form?: string;
   slots?: OoevvSlot[];
   variables?: OoevvVarBrief[];
   graph?: { id: string; processes?: OoevvProcess[] };
 }
-export interface SlotBinding { slot: string; role?: string; kind?: string; entity_id: string; entity?: string }
+export interface SlotBinding {
+  slot: string; role?: string; kind?: string;
+  entity_id: string; entity?: string;
+  entity_long_form?: string; entity_definition?: string;
+}
 export interface DatumCell { variable: string; name?: string; role?: string; value?: string; number?: number }
 export interface DatumRow {
   id: string;

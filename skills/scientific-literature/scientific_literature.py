@@ -2419,12 +2419,13 @@ def _scale_of(tx, var_id):
 def _var_brief(tx, var_id):
     rows = list(tx.query(
         f'match $v isa kefed-variable, has id "{escape_string(var_id)}", has name $n; '
-        f'fetch {{ "name": $n, "role": $v.kefed-variable-role }};').resolve())
+        f'fetch {{ "name": $n, "role": $v.kefed-variable-role, '
+        f'"definition": $v.ooevv-definition, "long_form": $v.ooevv-long-form }};').resolve())
     v = {"id": var_id, **({k: x for k, x in rows[0].items() if x is not None} if rows else {})}
     ql = list(tx.query(
         f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
         f'(measured-variable: $v, quality: $q) isa ooevv-measures; '
-        f'fetch {{ "quality": $q.name, "definition": $q.ooevv-definition }};').resolve())
+        f'fetch {{ "quality": $q.name, "definition": $q.ooevv-definition, "long_form": $q.ooevv-long-form }};').resolve())
     if ql:
         v["quality"] = {k: x for k, x in ql[0].items() if x is not None}
     sc = _scale_of(tx, var_id)
@@ -2433,7 +2434,7 @@ def _var_brief(tx, var_id):
     tgt = list(tx.query(
         f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
         f'(targeting-parameter: $v, target-entity: $e) isa ooevv-parameter-target; '
-        f'fetch {{ "id": $e.id, "name": $e.name, "definition": $e.ooevv-definition }};').resolve())
+        f'fetch {{ "id": $e.id, "name": $e.name, "definition": $e.ooevv-definition, "long_form": $e.ooevv-long-form }};').resolve())
     if tgt:
         v["target_entity"] = {k: x for k, x in tgt[0].items() if x is not None}
     # template slot this variable references (specificity deferred to instance binding)
@@ -2454,7 +2455,7 @@ def _load_experiment(tx, exp_id, container_type="kefed-model"):
     proc_rows = list(tx.query(
         f'match $m isa {container_type}, has id "{esc}"; '
         f'(container: $m, contained-process: $p) isa ooevv-set-process; $p has name $pn; '
-        f'fetch {{ "id": $p.id, "name": $pn, "definition": $p.ooevv-definition }};').resolve())
+        f'fetch {{ "id": $p.id, "name": $pn, "definition": $p.ooevv-definition, "long_form": $p.ooevv-long-form }};').resolve())
     procs = [{k: v for k, v in r.items() if v is not None} for r in proc_rows]
     for p in procs:
         pe = escape_string(p["id"])
@@ -2502,14 +2503,16 @@ def _load_template(tx, template_id):
     (processes + variable definitions) shared by every instance."""
     esc = escape_string(template_id)
     head = list(tx.query(f'match $t isa kefed-template, has id "{esc}"; '
-                         f'fetch {{ "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition }};').resolve())
+                         f'fetch {{ "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition, '
+                         f'"long_form": $t.ooevv-long-form }};').resolve())
     if not head:
         return None
     tpl = {k: v for k, v in head[0].items() if v is not None}
     slot_rows = list(tx.query(
         f'match $t isa kefed-template, has id "{esc}"; '
         f'(template: $t, slot: $sl) isa kefed-template-slot; '
-        f'fetch {{ "id": $sl.id, "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind }};').resolve())
+        f'fetch {{ "id": $sl.id, "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind, '
+        f'"definition": $sl.ooevv-definition, "long_form": $sl.ooevv-long-form }};').resolve())
     tpl["slots"] = [{k: v for k, v in r.items() if v is not None} for r in slot_rows]
     var_rows = list(tx.query(
         f'match $t isa kefed-template, has id "{esc}"; '
@@ -2550,7 +2553,8 @@ def _load_instance(tx, instance_id):
         f'$r isa ooevv-slot-binding, links (instance: $i, slot: $sl, filler: $e); '
         f'$sl has kefed-slot-role $role; $e has name $en; '
         f'fetch {{ "slot": $sl.id, "role": $role, "kind": $sl.kefed-slot-kind, '
-        f'"entity_id": $e.id, "entity": $en }};').resolve())
+        f'"entity_id": $e.id, "entity": $en, '
+        f'"entity_long_form": $e.ooevv-long-form, "entity_definition": $e.ooevv-definition }};').resolve())
     inst["bindings"] = [{k: v for k, v in r.items() if v is not None} for r in bind_rows]
     # data rows
     datum_rows = list(tx.query(
@@ -2612,6 +2616,14 @@ def _load_synthesized_claims(tx, inv_id):
                 f'(evidence: $e, ground-claim: $rc) isa scilit-evidence-grounds; '
                 f'fetch {{ "id": $rc.id, "statement": $rc.scilit-claim-statement }};').resolve())
             w["grounds"] = [{k: v for k, v in g.items() if v is not None} for g in grounds]
+            # grounding in structured data: the template instances (and their papers) this warrant rests on
+            inst = list(tx.query(
+                f'match $e isa scilit-evidence, has id "{escape_string(w["id"])}"; '
+                f'(evidence: $e, grounding-instance: $i) isa scilit-evidence-instance; '
+                f'(bundle: $b, experiment: $i) isa ooevv-bundle-experiment; '
+                f'(sensemaking: $b, paper: $p) isa scilit-sensemaking-paper; '
+                f'fetch {{ "id": $i.id, "name": $i.name, "bundle": $b.id, "paper": $p.name }};').resolve())
+            w["grounding_instances"] = [{k: v for k, v in g.items() if v is not None} for g in inst]
         cl["evidence"] = warrants
     tier = {t: i for i, t in enumerate(CLAIM_TYPES)}
     claims.sort(key=lambda c: tier.get(c.get("type"), 99))
@@ -3226,9 +3238,23 @@ def cmd_add_evidence(args):
                         f'insert (evidence: $ev, ground-claim: $rc) isa scilit-evidence-grounds;'
                     ).resolve()
                     linked += 1
+            # ground the warrant in the structured data: the template instances it rests on
+            inst_ids = [i.strip() for i in (getattr(args, "instances", None) or "").split(",") if i.strip()]
+            inst_linked = 0
+            for iid in inst_ids:
+                ie = list(tx.query(
+                    f'match $i isa kefed-instance, has id "{escape_string(iid)}"; fetch {{ "id": $i.id }};').resolve())
+                if ie:
+                    tx.query(
+                        f'match $ev isa scilit-evidence, has id "{ev_id}"; '
+                        f'$i isa kefed-instance, has id "{escape_string(iid)}"; '
+                        f'insert (evidence: $ev, grounding-instance: $i) isa scilit-evidence-instance;'
+                    ).resolve()
+                    inst_linked += 1
             tx.commit()
     print(json.dumps({"success": True, "evidence_id": ev_id, "synthesized_claim_id": args.claim_id,
-                      "confidence": confidence, "grounds_linked": linked}, indent=2))
+                      "confidence": confidence, "grounds_linked": linked,
+                      "instances_linked": inst_linked}, indent=2))
 
 
 def cmd_create_bundle(args):
@@ -3569,8 +3595,9 @@ def cmd_ensure_quality(args):
             return
         qid = generate_id("scqual")
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+        lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $q isa ooevv-quality, has id "{qid}", has name "{escape_string(args.name)}"{defn};').resolve()
+            tx.query(f'insert $q isa ooevv-quality, has id "{qid}", has name "{escape_string(args.name)}"{defn}{lf};').resolve()
             tx.commit()
     print(json.dumps({"success": True, "quality_id": qid, "reused": False}))
 
@@ -3589,8 +3616,9 @@ def cmd_ensure_entity(args):
         ts = get_timestamp()
         kind = f', has scilit-entity-kind "{escape_string(args.kind)}"' if getattr(args, "kind", None) else ""
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+        lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $e isa scilit-entity, has id "{eid}", has name "{escape_string(args.name)}"{kind}{defn}, '
+            tx.query(f'insert $e isa scilit-entity, has id "{eid}", has name "{escape_string(args.name)}"{kind}{defn}{lf}, '
                      f'has created-at {ts};').resolve()
             tx.commit()
     print(json.dumps({"success": True, "entity_id": eid, "reused": False}))
@@ -3625,6 +3653,7 @@ def cmd_add_process(args):
     proc_id = generate_id("scproc")
     ts = get_timestamp()
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+    lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
     # the container may be a reusable template OR a paper-specific experiment (both play the role)
     ctype = "kefed-template" if getattr(args, "template", None) else "kefed-model"
     cid = getattr(args, "template", None) or args.experiment
@@ -3638,7 +3667,7 @@ def cmd_add_process(args):
                 print(json.dumps({"success": False, "error": f"{ctype} not found"})); sys.exit(1)
             tx.query(
                 f'match $m isa {ctype}, has id "{escape_string(cid)}"; '
-                f'insert $p isa {types[args.type]}, has id "{proc_id}", has name "{escape_string(args.name)}"{defn}, '
+                f'insert $p isa {types[args.type]}, has id "{proc_id}", has name "{escape_string(args.name)}"{defn}{lf}, '
                 f'has created-at {ts}; (container: $m, contained-process: $p) isa ooevv-set-process;').resolve()
             if getattr(args, "parent", None):
                 tx.query(
@@ -3688,6 +3717,7 @@ def cmd_add_variable(args):
         print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(scale_types)}"})); sys.exit(1)
     var_id = generate_id("scvar"); scale_id = generate_id("scscale"); ts = get_timestamp()
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+    lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
     # scale attrs
     sattrs = []
     if getattr(args, "unit", None):
@@ -3716,7 +3746,7 @@ def cmd_add_variable(args):
                 f'match $m isa {ctype}, has id "{escape_string(cid)}"; '
                 f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
                 f'insert $v isa kefed-variable, has id "{var_id}", has name "{escape_string(args.name)}", '
-                f'has kefed-variable-role "{escape_string(args.role)}"{defn}, has created-at {ts}; '
+                f'has kefed-variable-role "{escape_string(args.role)}"{defn}{lf}, has created-at {ts}; '
                 f'$s isa {scale_types[args.scale_type]}, has id "{scale_id}", has created-at {ts}{sclause}; '
                 f'(model: $m, variable: $v) isa kefed-element; '
                 f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
@@ -3767,8 +3797,9 @@ def cmd_ensure_template(args):
             return
         tid = generate_id("sctpl"); ts = get_timestamp()
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+        lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $t isa kefed-template, has id "{tid}", has name "{escape_string(args.name)}"{defn}, '
+            tx.query(f'insert $t isa kefed-template, has id "{tid}", has name "{escape_string(args.name)}"{defn}{lf}, '
                      f'has created-at {ts};').resolve()
             tx.commit()
     print(json.dumps({"success": True, "template_id": tid, "reused": False}))
@@ -3785,10 +3816,12 @@ def cmd_add_slot(args):
             sid = generate_id("scslot"); ts = get_timestamp()
             name = getattr(args, "name", None) or args.role
             kind = f', has kefed-slot-kind "{escape_string(args.kind)}"' if getattr(args, "kind", None) else ""
+            defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+            lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
             tx.query(
                 f'match $t isa kefed-template, has id "{escape_string(args.template)}"; '
                 f'insert $sl isa kefed-slot, has id "{sid}", has name "{escape_string(name)}", '
-                f'has kefed-slot-role "{escape_string(args.role)}"{kind}, has created-at {ts}; '
+                f'has kefed-slot-role "{escape_string(args.role)}"{kind}{defn}{lf}, has created-at {ts}; '
                 f'(template: $t, slot: $sl) isa kefed-template-slot;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "slot_id": sid, "role": args.role, "kind": getattr(args, "kind", None)}))
@@ -3826,7 +3859,7 @@ def cmd_list_templates(args):
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             rows = list(tx.query(
                 'match $t isa kefed-template; '
-                'fetch { "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition };').resolve())
+                'fetch { "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition, "long_form": $t.ooevv-long-form };').resolve())
             tpls = _match_filter([{k: v for k, v in r.items() if v is not None} for r in rows],
                                  getattr(args, "match", None), "name", "definition")
             for tp in tpls:
@@ -3849,7 +3882,7 @@ def cmd_list_qualities(args):
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             rows = list(tx.query(
                 'match $q isa ooevv-quality; '
-                'fetch { "id": $q.id, "name": $q.name, "definition": $q.ooevv-definition };').resolve())
+                'fetch { "id": $q.id, "name": $q.name, "definition": $q.ooevv-definition, "long_form": $q.ooevv-long-form };').resolve())
     qs = _match_filter([{k: v for k, v in r.items() if v is not None} for r in rows],
                        getattr(args, "match", None), "name", "definition")
     print(json.dumps({"success": True, "count": len(qs), "qualities": qs}, indent=2))
@@ -3862,7 +3895,7 @@ def cmd_list_entities(args):
             rows = list(tx.query(
                 'match $e isa scilit-entity; '
                 'fetch { "id": $e.id, "name": $e.name, "kind": $e.scilit-entity-kind, '
-                '"definition": $e.ooevv-definition };').resolve())
+                '"definition": $e.ooevv-definition, "long_form": $e.ooevv-long-form };').resolve())
     es = _match_filter([{k: v for k, v in r.items() if v is not None} for r in rows],
                        getattr(args, "match", None), "name", "definition")
     print(json.dumps({"success": True, "count": len(es), "entities": es}, indent=2))
@@ -4360,12 +4393,14 @@ def main():
     # --- OOEVV / KEfED protocol-graph curation ---
     p = subparsers.add_parser("ensure-quality", help="Find-or-create a reusable curated quality")
     p.add_argument("--name", required=True, help="Quality name (concentration, signal-intensity...)")
-    p.add_argument("--definition", help="Curated definition")
+    p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
 
     p = subparsers.add_parser("ensure-entity", help="Find-or-create a reusable curated entity (specificity/material target)")
     p.add_argument("--name", required=True, help="Entity name (SIRT3, dasatinib, HSC...)")
     p.add_argument("--kind", help="gene|protein|chemical|cell-type|tissue|organism|reagent...")
-    p.add_argument("--definition", help="Curated definition")
+    p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
 
     p = subparsers.add_parser("add-experiment", help="Create one experiment (element-set) under a bundle")
     p.add_argument("--bundle", required=True, help="Bundle id (scsense-...)")
@@ -4377,7 +4412,8 @@ def main():
     p.add_argument("--name", required=True, help="Process/step name")
     p.add_argument("--type", required=True, help="assay|material-processing|data-transformation")
     p.add_argument("--parent", help="Parent process id (nest as sub-process)")
-    p.add_argument("--definition", help="Curated definition")
+    p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
 
     p = subparsers.add_parser("link-entity", help="Link an entity to a process as input|output")
     p.add_argument("--process", required=True, help="Process id (scproc-...)")
@@ -4396,7 +4432,8 @@ def main():
     p.add_argument("--max", help="Numeric scale max")
     p.add_argument("--values", help="Pipe-separated allowed values (nominal/binary) or ordered ranks (ordinal)")
     p.add_argument("--produced-by", dest="produced_by", help="(measurement) terminal process id")
-    p.add_argument("--definition", help="Curated definition")
+    p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
 
     p = subparsers.add_parser("bind-parameter", help="Bind a parameter at a process step (+ optional specificity target entity)")
     p.add_argument("--process", required=True, help="Process id (scproc-...)")
@@ -4406,13 +4443,16 @@ def main():
     # --- KEfED template / instance / data (curation by recognize-reuse-fill) ---
     p = subparsers.add_parser("ensure-template", help="Find-or-create a reusable experiment-design template")
     p.add_argument("--name", required=True, help="Template name (e.g. 'qPCR expression profiling')")
-    p.add_argument("--definition", help="Curated definition of the design")
+    p.add_argument("--definition", help="Curated definition of the design (undergraduate-level: what the assay measures + how)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated template name")
 
     p = subparsers.add_parser("add-slot", help="Declare a typed slot on a template (filled per-instance)")
     p.add_argument("--template", required=True, help="Template id (sctpl-...)")
     p.add_argument("--role", required=True, help="target-gene|normalization-control|grouping|treatment|...")
     p.add_argument("--kind", help="gene|chemical|cell-type|antibody|...")
     p.add_argument("--name", help="Slot display name (defaults to role)")
+    p.add_argument("--definition", help="What this slot is for, in plain English (undergraduate-level)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated slot name")
 
     p = subparsers.add_parser("param-slot", help="Bind a template variable to a slot (defers specificity to the instance)")
     p.add_argument("--parameter", required=True, help="Template variable id (scvar-...)")
@@ -4492,6 +4532,7 @@ def main():
     p.add_argument("--argument", required=True, help="Reasoned argument over the grounding reported-claims")
     p.add_argument("--confidence", required=True, help="Confidence score 0..1")
     p.add_argument("--grounds", help="Comma-separated reported-claim ids this warrant rests on")
+    p.add_argument("--instances", help="Comma-separated kefed-instance ids whose data rows this warrant rests on")
     p.add_argument("--evidence-type", dest="evidence_type", choices=EVIDENCE_TYPES,
         help="Optional evidence-type qualifier")
 

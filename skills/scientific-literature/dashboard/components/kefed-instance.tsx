@@ -8,20 +8,32 @@
 import { useState, Fragment } from 'react';
 import { T } from './tokens';
 import { KefedProtocolGraph } from './kefed-graph';
-import type { InstanceDetail, TemplateDetail, DatumRow } from '@/lib/scientific-literature';
+import type { InstanceDetail, TemplateDetail, DatumRow, OoevvSlot, SlotBinding } from '@/lib/scientific-literature';
 
-function SlotChip({ role, kind, filler }: { role?: string; kind?: string; filler?: string }) {
+function SlotChip({ slot, binding }: { slot: OoevvSlot; binding?: SlotBinding }) {
+  const filler = binding?.entity;
   const filled = !!filler;
+  // tooltip: what the slot is for, plus the filler's expansion/definition (so click-in is self-explanatory)
+  const tip = [
+    slot.kind ? `kind: ${slot.kind}` : '',
+    slot.definition || '',
+    binding?.entity_long_form ? `${filler} = ${binding.entity_long_form}` : '',
+    binding?.entity_definition || '',
+  ].filter(Boolean).join('\n');
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'baseline', gap: 6, padding: '3px 9px', borderRadius: 5,
       border: `1px solid ${filled ? T.rust : T.borderDim}`,
       background: filled ? 'rgba(176,109,84,0.10)' : 'transparent', marginRight: 6, marginBottom: 6,
-    }} title={kind ? `kind: ${kind}` : undefined}>
-      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.fgDim, textTransform: 'uppercase', letterSpacing: 0.4 }}>{role}</span>
+      cursor: tip ? 'help' : 'default',
+    }} title={tip || undefined}>
+      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.fgDim, textTransform: 'uppercase', letterSpacing: 0.4 }}>{slot.role}</span>
       <span style={{ fontFamily: T.sans, fontSize: 12.5, color: filled ? T.rust : T.fgFaint }}>
         {filler || '⟨unfilled⟩'}
       </span>
+      {binding?.entity_long_form && (
+        <span style={{ fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint }}>={binding.entity_long_form}</span>
+      )}
     </span>
   );
 }
@@ -35,8 +47,9 @@ function Spreadsheet({ tpl, data }: { tpl?: TemplateDetail | null; data: DatumRo
   });
   // fall back to columns discovered in the data if the template has no variables
   const cols = vars.length
-    ? vars.map((v) => ({ id: v.id, name: v.name, role: v.role, unit: v.scale?.unit, quality: v.quality?.quality }))
-    : Array.from(new Map(data.flatMap((r) => r.cells).map((c) => [c.variable, { id: c.variable, name: c.name, role: c.role, unit: undefined, quality: undefined }])).values());
+    ? vars.map((v) => ({ id: v.id, name: v.name, role: v.role, unit: v.scale?.unit, quality: v.quality?.quality,
+        tip: [v.definition, v.long_form, v.quality?.quality ? `measures: ${v.quality.quality}` : '', v.quality?.definition].filter(Boolean).join('\n') }))
+    : Array.from(new Map(data.flatMap((r) => r.cells).map((c) => [c.variable, { id: c.variable, name: c.name, role: c.role, unit: undefined, quality: undefined, tip: '' }])).values());
 
   const cellOf = (row: DatumRow, colId: string) => row.cells.find((c) => c.variable === colId);
   if (!data.length) return <div style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>No data rows yet.</div>;
@@ -47,10 +60,11 @@ function Spreadsheet({ tpl, data }: { tpl?: TemplateDetail | null; data: DatumRo
         <thead>
           <tr>
             {cols.map((c) => (
-              <th key={c.id} title={c.quality ? `measures: ${c.quality}` : undefined}
+              <th key={c.id} title={c.tip || (c.quality ? `measures: ${c.quality}` : undefined)}
                 style={{
                   textAlign: 'left', padding: '5px 10px', borderBottom: `2px solid ${T.border}`,
                   color: c.role === 'measurement' ? T.teal : T.blue, whiteSpace: 'nowrap',
+                  cursor: c.tip ? 'help' : 'default',
                 }}>
                 {c.name}{c.unit ? <span style={{ color: T.fgFaint }}> ({c.unit})</span> : null}
                 <div style={{ fontSize: 8.5, color: T.fgFaint, textTransform: 'uppercase', letterSpacing: 0.4 }}>
@@ -101,25 +115,62 @@ function Spreadsheet({ tpl, data }: { tpl?: TemplateDetail | null; data: DatumRo
   );
 }
 
+function Glossary({ tpl, bindings }: { tpl?: TemplateDetail | null; bindings?: SlotBinding[] }) {
+  const [open, setOpen] = useState(false);
+  // collect every term that carries an explanation, so a reader can decode the clutter
+  type Term = { term: string; long?: string; def?: string };
+  const terms: Term[] = [];
+  if (tpl?.long_form || tpl?.definition) terms.push({ term: tpl?.name || 'template', long: tpl?.long_form, def: tpl?.definition });
+  (tpl?.slots || []).forEach((s) => { if (s.long_form || s.definition) terms.push({ term: s.role || s.id, long: s.long_form, def: s.definition }); });
+  (tpl?.variables || []).forEach((v) => {
+    if (v.long_form || v.definition) terms.push({ term: v.name || v.id, long: v.long_form, def: v.definition });
+    if (v.quality?.long_form || v.quality?.definition) terms.push({ term: v.quality?.quality || '', long: v.quality?.long_form, def: v.quality?.definition });
+  });
+  (bindings || []).forEach((b) => { if (b.entity_long_form || b.entity_definition) terms.push({ term: b.entity || '', long: b.entity_long_form, def: b.entity_definition }); });
+  // de-dup by term
+  const seen = new Set<string>();
+  const uniq = terms.filter((t) => t.term && !seen.has(t.term) && seen.add(t.term));
+  if (!uniq.length) return null;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={() => setOpen(!open)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: T.mono, fontSize: 10.5, color: T.olive }}>
+        {open ? '▾' : '▸'} terms &amp; abbreviations ({uniq.length})
+      </button>
+      {open && (
+        <dl style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px' }}>
+          {uniq.map((t, i) => (
+            <Fragment key={i}>
+              <dt style={{ fontFamily: T.mono, fontSize: 11, color: T.fg, whiteSpace: 'nowrap' }}>
+                {t.term}{t.long ? <span style={{ color: T.fgFaint }}> = {t.long}</span> : null}
+              </dt>
+              <dd style={{ margin: 0, fontFamily: T.sans, fontSize: 11.5, color: T.fgDim }}>{t.def}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
 export function KefedInstance({ inst }: { inst: InstanceDetail }) {
   const tpl = inst.template_detail;
-  const fillerFor = (role?: string) => inst.bindings?.find((b) => b.role === role)?.entity;
+  const bindingFor = (role?: string) => inst.bindings?.find((b) => b.role === role);
   const [showDesign, setShowDesign] = useState(false);
   return (
     <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, padding: '14px 16px', marginBottom: 14, background: T.bgRaised }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
         <div style={{ fontFamily: T.serif, fontSize: 14.5, color: T.fg }}>{inst.name || inst.id}</div>
         {inst.template?.name && (
-          <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgDim }}>
+          <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgDim }} title={tpl?.definition || ''}>
             instance of <span style={{ color: T.olive }}>{inst.template.name}</span>
           </div>
         )}
       </div>
 
-      {/* filled slots */}
+      {/* filled slots (hover a chip for its definition + the filler's expansion) */}
       <div style={{ marginTop: 10 }}>
         {(tpl?.slots || []).map((s) => (
-          <SlotChip key={s.id} role={s.role} kind={s.kind} filler={fillerFor(s.role)} />
+          <SlotChip key={s.id} slot={s} binding={bindingFor(s.role)} />
         ))}
       </div>
 
@@ -144,6 +195,9 @@ export function KefedInstance({ inst }: { inst: InstanceDetail }) {
           )}
         </div>
       )}
+
+      {/* plain-English glossary: every abbreviation + term used above, expanded */}
+      <Glossary tpl={tpl} bindings={inst.bindings} />
     </div>
   );
 }
