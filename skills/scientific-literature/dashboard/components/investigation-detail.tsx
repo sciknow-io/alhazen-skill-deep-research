@@ -323,6 +323,17 @@ function AnalysisStage({ phase, claims, impacts }: { phase?: InvestigationPhase;
                   )}
                   <span style={{ fontFamily: T.sans, fontSize: 13, color: T.fgDim }}>{w.argument}</span>
                 </div>
+                {!!(w.grounding_instances || []).length && (
+                  <div style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint, marginTop: 4 }}>
+                    grounded in data:{' '}
+                    {w.grounding_instances!.map((gi, i) => (
+                      <span key={gi.id} style={{ color: T.rust }} title={`${gi.paper || ''} — open this bundle in the Sensemaking stage to see the data rows`}>
+                        {i ? ' · ' : ''}{gi.name || gi.id}
+                        {gi.paper ? <span style={{ color: T.fgFaint }}> ({gi.paper})</span> : null}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {!!(w.grounds || []).length && (
                   <div style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint, marginTop: 3 }}>
                     grounds: {w.grounds!.length} reported-claim(s)

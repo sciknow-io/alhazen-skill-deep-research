@@ -925,5 +925,32 @@ entity scilit-observation plays ooevv-datum-observation:observation;
 
 
 # =============================================================================
+# CURATION STANDARD: structured abbreviation long-forms (undergraduate-readable)
+# Every OOEVV element carries (a) an ooevv-definition: a plain-English, undergraduate-
+# level explanation of what it is and what it does in the experiment, and (b) an
+# optional ooevv-long-form: the expanded form of an abbreviated name
+# (e.g. "LSK" -> "Lineage-negative, Sca-1+, c-Kit+"). The dashboard renders the
+# long-form as a crisp expansion and the definition as the fuller explanation.
+# =============================================================================
+attribute ooevv-long-form, value string;
+entity ooevv-quality owns ooevv-long-form;
+entity ooevv-process owns ooevv-long-form;
+entity kefed-variable owns ooevv-long-form;
+entity kefed-template owns ooevv-long-form;
+entity scilit-entity owns ooevv-long-form;
+entity kefed-slot owns ooevv-definition, owns ooevv-long-form;
+
+
+# =============================================================================
+# ANALYSIS grounding in structured data: an evidence warrant may cite the
+# template INSTANCES whose data rows it rests on (not only reported-claims).
+# =============================================================================
+relation scilit-evidence-instance,
+    relates evidence, relates grounding-instance;
+entity scilit-evidence plays scilit-evidence-instance:evidence;
+entity kefed-instance plays scilit-evidence-instance:grounding-instance;
+
+
+# =============================================================================
 # END SCIENTIFIC LITERATURE NAMESPACE
 # =============================================================================
