@@ -1077,27 +1077,36 @@ def cmd_fetch_pdf(args):
             }, indent=2))
             return
 
-    # Build PDF URL
-    if arxiv_id_attr:
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id_attr}"
-    elif doi:
-        pdf_url = arxiv_pdf_url(doi)
-    if args.url:
-        pdf_url = args.url  # explicit override
-    if not pdf_url:
-        print(json.dumps({"success": False,
-                          "error": "Cannot determine PDF URL. Provide --url explicitly."}))
-        sys.exit(1)
+    # Local-file ingestion: read bytes from a PDF already on disk (e.g. a manually
+    # downloaded paywalled paper) instead of fetching over the network.
+    if getattr(args, "file", None):
+        if not os.path.isfile(args.file):
+            print(json.dumps({"success": False, "error": f"--file not found: {args.file}"})); sys.exit(1)
+        with open(args.file, "rb") as fh:
+            pdf_bytes = fh.read()
+        pdf_url = f"file://{os.path.abspath(args.file)}"
+    else:
+        # Build PDF URL
+        if arxiv_id_attr:
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id_attr}"
+        elif doi:
+            pdf_url = arxiv_pdf_url(doi)
+        if args.url:
+            pdf_url = args.url  # explicit override
+        if not pdf_url:
+            print(json.dumps({"success": False,
+                              "error": "Cannot determine PDF URL. Provide --url explicitly."}))
+            sys.exit(1)
 
-    print(f"Downloading PDF from {pdf_url} ...", file=sys.stderr)
-    resp = requests.get(pdf_url, timeout=60, allow_redirects=True,
-                        headers={"User-Agent": "Mozilla/5.0 (compatible; alhazen/1.0)"})
-    resp.raise_for_status()
-    pdf_bytes = resp.content
+        print(f"Downloading PDF from {pdf_url} ...", file=sys.stderr)
+        resp = requests.get(pdf_url, timeout=60, allow_redirects=True,
+                            headers={"User-Agent": "Mozilla/5.0 (compatible; alhazen/1.0)"})
+        resp.raise_for_status()
+        pdf_bytes = resp.content
 
     if pdf_bytes[:4] != b"%PDF":
         print(json.dumps({"success": False,
-                          "error": "Response is not a PDF (bad URL or access denied)"}))
+                          "error": "Response is not a PDF (bad file/URL or access denied)"}))
         sys.exit(1)
 
     # Deterministic full-text artifact id; both renditions live in fulltext/<paper-id>/,
@@ -2000,9 +2009,12 @@ def _ensure_investigation_collection(driver, inv_id, inv_name=None):
     (already aboutness-linked); for a deep-dive it is a dedicated traced corpus,
     created on first use. Returns the collection id. Idempotent."""
     with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+        # the PRIMARY analyzed corpus is linked via scilit-investigation-scope specifically
+        # (NOT generic aboutness) so auxiliary corpora attached via scilit-investigation-aux-corpus
+        # never get mistaken for the scope corpus.
         existing = list(tx.query(
             f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
-            f'(note: $inv, subject: $c) isa alh-aboutness; $c isa scilit-corpus; '
+            f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope; '
             f'fetch {{ "id": $c.id }};'
         ).resolve())
     if existing:
@@ -4256,8 +4268,10 @@ def main():
         help="scilit-paper TypeDB ID (e.g. scilit-paper-fd0a1617ef99)")
     p.add_argument("--url",
         help="Override PDF URL (default: derived from arXiv DOI)")
+    p.add_argument("--file",
+        help="Ingest a LOCAL PDF file already on disk (e.g. a manually downloaded paywalled paper) instead of downloading")
     p.add_argument("--force", action="store_true",
-        help="Re-download even if artifact already exists")
+        help="Re-download/re-ingest even if artifact already exists")
 
     # show
     p = subparsers.add_parser("show", help="Show a paper for sensemaking")
