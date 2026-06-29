@@ -589,8 +589,13 @@ relation scilit-investigation-grounding sub alh-note-threading,
 relation scilit-investigation-phasing sub alh-note-threading,
     relates investigation as parent-note, relates phase as child-note;
 
-# investigation -> corpus (its paper set)
+# investigation -> corpus (its PRIMARY analyzed paper set; exactly one per investigation)
 relation scilit-investigation-scope sub alh-aboutness,
+    relates investigation as note, relates corpus as subject;
+
+# investigation -> auxiliary corpus (additional attached paper sets beyond the primary
+# scope, e.g. a forward-citation candidate set; an investigation may have MANY of these)
+relation scilit-investigation-aux-corpus sub alh-aboutness,
     relates investigation as note, relates corpus as subject;
 
 # investigation -> seed/focal paper (optional anchor, e.g. the review that launched the inquiry)
@@ -674,6 +679,7 @@ entity scilit-investigation
     plays scilit-investigation-grounding:investigation,
     plays scilit-investigation-phasing:investigation,
     plays scilit-investigation-scope:investigation,
+    plays scilit-investigation-aux-corpus:investigation,
     plays scilit-investigation-focus:investigation,
     plays scilit-investigation-synthesized-claim:investigation,
     plays scilit-investigation-synthesized-gap:investigation,
@@ -739,7 +745,8 @@ entity scilit-paper
     plays scilit-impact-citation:citing-paper,
     plays scilit-hinge:hinged-to;
 
-entity scilit-corpus plays scilit-investigation-scope:corpus;
+entity scilit-corpus plays scilit-investigation-scope:corpus,
+    plays scilit-investigation-aux-corpus:corpus;
 
 entity scilit-ontology-term plays scilit-synthesis-concept:concept;
 
