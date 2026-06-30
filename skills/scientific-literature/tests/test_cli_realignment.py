@@ -3,9 +3,12 @@ Tests for CLI/KQED re-alignment (Plan 2).
 
 Task 1: scilit-sensemaking-experiment relation + authoring_db fixture.
 Task 2: kqed.py authoring rewrite (add_kefed_model, add_observation, add_gap).
+Task 3: RENAME-ONLY batch (reported-claim -> claim, reported-gap -> gap, kefed-variable -> ooevv-variable).
 """
+import json
 import os
 import sys
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from conftest import w, r, SCRATCH_DB
@@ -138,3 +141,118 @@ def test_add_gap_bundle_threaded(authoring_db):
                   'match $g isa scilit-gap, has id "scgap-test-1", '
                   'has scilit-gap-provenance $p; fetch {"p": $p};')
     assert prov_rows and prov_rows[0]["p"] == "explicit-cue"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 tests: RENAME-ONLY batch
+#   cmd_add_reported_claim  -> inserts scilit-claim (was scilit-reported-claim)
+#   cmd_add_reported_gap    -> inserts scilit-gap   (was scilit-reported-gap)
+#   cmd_add_datum           -> matches ooevv-variable (was kefed-variable)
+# ---------------------------------------------------------------------------
+
+def test_cmd_add_reported_claim_inserts_scilit_claim(authoring_db, capsys):
+    """cmd_add_reported_claim must insert a scilit-claim (not the retired scilit-reported-claim)
+    and thread it under the bundle via scilit-sensemaking-reported-claim."""
+    import scientific_literature as sl
+
+    w(authoring_db,
+      'insert $b isa scilit-paper-sensemaking, has id "scsm-claim-t3", has name "claim bundle t3";')
+
+    args = types.SimpleNamespace(
+        bundle="scsm-claim-t3",
+        type="primary",
+        statement="SIRT3 activity declines with age in HSCs.",
+        rhetorical_role=None,
+        cites="",
+        observations="",
+    )
+    sl.cmd_add_reported_claim(args)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["success"] is True, f"handler returned: {result}"
+    claim_id = result["reported_claim_id"]
+
+    # scilit-claim must exist and be threaded under the bundle
+    rows = r(authoring_db,
+             f'match $b isa scilit-paper-sensemaking, has id "scsm-claim-t3"; '
+             f'$cl isa scilit-claim, has id "{claim_id}"; '
+             f'(sensemaking: $b, reported-claim: $cl) isa scilit-sensemaking-reported-claim; '
+             f'fetch {{"id": $cl.id}};')
+    assert rows, f"scilit-claim {claim_id!r} not threaded under bundle via scilit-sensemaking-reported-claim"
+    assert rows[0]["id"] == claim_id
+
+    # claim must carry type and statement
+    attr_rows = r(authoring_db,
+                  f'match $cl isa scilit-claim, has id "{claim_id}", '
+                  f'has scilit-claim-type $t, has scilit-claim-statement $s; '
+                  f'fetch {{"t": $t, "s": $s}};')
+    assert attr_rows and attr_rows[0]["t"] == "primary"
+    assert "SIRT3" in attr_rows[0]["s"]
+
+
+def test_cmd_add_reported_gap_inserts_scilit_gap(authoring_db, capsys):
+    """cmd_add_reported_gap must insert a scilit-gap (not the retired scilit-reported-gap)
+    and thread it under the bundle via scilit-sensemaking-reported-gap."""
+    import scientific_literature as sl
+
+    w(authoring_db,
+      'insert $b isa scilit-paper-sensemaking, has id "scsm-gap-t3", has name "gap bundle t3";')
+
+    args = types.SimpleNamespace(
+        bundle="scsm-gap-t3",
+        statement="The mechanism by which SIRT3 reversal operates is unknown.",
+        goal="understand the reversal mechanism",
+    )
+    sl.cmd_add_reported_gap(args)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["success"] is True, f"handler returned: {result}"
+    gap_id = result["reported_gap_id"]
+
+    # scilit-gap must exist and be threaded under the bundle
+    rows = r(authoring_db,
+             f'match $b isa scilit-paper-sensemaking, has id "scsm-gap-t3"; '
+             f'$g isa scilit-gap, has id "{gap_id}"; '
+             f'(sensemaking: $b, reported-gap: $g) isa scilit-sensemaking-reported-gap; '
+             f'fetch {{"id": $g.id}};')
+    assert rows, f"scilit-gap {gap_id!r} not threaded under bundle via scilit-sensemaking-reported-gap"
+    assert rows[0]["id"] == gap_id
+
+
+def test_cmd_add_datum_uses_ooevv_variable(authoring_db, capsys):
+    """cmd_add_datum must link cells to ooevv-variable (not the retired kefed-variable).
+    The ooevv-cell relation must be inserted when a valid ooevv-variable id is given."""
+    import scientific_literature as sl
+
+    # Insert prerequisite: kefed-instance + ooevv-variable
+    w(authoring_db,
+      'insert $i isa kefed-instance, has id "scinst-datum-t3", has name "test instance t3";')
+    w(authoring_db,
+      'insert $v isa ooevv-variable, has id "oov-datum-t3", has name "SIRT3 activity", '
+      'has ooevv-variable-role "measurement";')
+
+    args = types.SimpleNamespace(
+        instance="scinst-datum-t3",
+        cells=json.dumps([{"variable": "oov-datum-t3", "value": "low", "number": 0.3}]),
+        observation=None,
+        gloss=None,
+    )
+    sl.cmd_add_datum(args)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["success"] is True, f"handler returned: {result}"
+    datum_id = result["datum_id"]
+    assert result["cells"] == 1
+
+    # ooevv-cell must link the datum to the ooevv-variable
+    cell_rows = r(authoring_db,
+                  f'match $d isa ooevv-datum, has id "{datum_id}"; '
+                  f'$v isa ooevv-variable, has id "oov-datum-t3"; '
+                  f'(datum: $d, cell-variable: $v) isa ooevv-cell; '
+                  f'fetch {{"did": $d.id, "vid": $v.id}};')
+    assert cell_rows, f"ooevv-cell not found linking datum {datum_id!r} to variable 'oov-datum-t3'"
+    assert cell_rows[0]["did"] == datum_id
+    assert cell_rows[0]["vid"] == "oov-datum-t3"

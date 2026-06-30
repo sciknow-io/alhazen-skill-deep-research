@@ -2406,7 +2406,7 @@ def _load_instances(tx, bundle_id):
 
 def _scale_of(tx, var_id):
     rows = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
         f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
         f'fetch {{ "id": $s.id, "unit": $s.ooevv-unit }};').resolve())
     if not rows:
@@ -3241,12 +3241,12 @@ def cmd_add_evidence(args):
             linked = 0
             for gid in ground_ids:
                 rc = list(tx.query(
-                    f'match $rc isa scilit-reported-claim, has id "{escape_string(gid)}"; '
+                    f'match $rc isa scilit-claim, has id "{escape_string(gid)}"; '
                     f'fetch {{ "id": $rc.id }};').resolve())
                 if rc:
                     tx.query(
                         f'match $ev isa scilit-evidence, has id "{ev_id}"; '
-                        f'$rc isa scilit-reported-claim, has id "{escape_string(gid)}"; '
+                        f'$rc isa scilit-claim, has id "{escape_string(gid)}"; '
                         f'insert (evidence: $ev, ground-claim: $rc) isa scilit-evidence-grounds;'
                     ).resolve()
                     linked += 1
@@ -3395,7 +3395,7 @@ def cmd_add_mechanism(args):
                     conf = f', has confidence {float(args.confidence)}'
                 except ValueError:
                     conf = ""
-            claim_match = (f'$cl isa scilit-reported-claim, has id "{escape_string(args.claim)}"; '
+            claim_match = (f'$cl isa scilit-claim, has id "{escape_string(args.claim)}"; '
                            if getattr(args, "claim", None) else "")
             claim_insert = ('(claim: $cl, mechanism: $ml) isa scilit-claim-mechanism; '
                             if getattr(args, "claim", None) else "")
@@ -3512,7 +3512,7 @@ def cmd_ground_bundle(args):
 
 
 def cmd_add_reported_claim(args):
-    """Add a scilit-reported-claim (asserted within the paper) to a sensemaking bundle.
+    """Add a scilit-claim (asserted within the paper) to a sensemaking bundle.
     Support: --cites <paper ids> (citation hinges) and/or --observations <obs ids> (internal)."""
     if args.type not in CLAIM_TYPES:
         print(json.dumps({"success": False,
@@ -3535,19 +3535,19 @@ def cmd_add_reported_claim(args):
                 sys.exit(1)
             tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'insert $cl isa scilit-reported-claim, has id "{claim_id}", has name "{escape_string(name)}", '
+                f'insert $cl isa scilit-claim, has id "{claim_id}", has name "{escape_string(name)}", '
                 f'has scilit-claim-type "{escape_string(args.type)}", '
                 f'has scilit-claim-statement "{escape_string(args.statement)}"{role_clause}, has created-at {ts}; '
                 f'(sensemaking: $b, reported-claim: $cl) isa scilit-sensemaking-reported-claim;'
             ).resolve()
             for oid in obs_ids:
                 tx.query(
-                    f'match $cl isa scilit-reported-claim, has id "{claim_id}"; '
+                    f'match $cl isa scilit-claim, has id "{claim_id}"; '
                     f'$o isa scilit-observation, has id "{escape_string(oid)}"; '
-                    f'insert (reported-claim: $cl, observation: $o) isa scilit-claim-observation;').resolve()
+                    f'insert (claim: $cl, observation: $o) isa scilit-claim-observation;').resolve()
             for pid in cite_ids:
                 tx.query(
-                    f'match $cl isa scilit-reported-claim, has id "{claim_id}"; '
+                    f'match $cl isa scilit-claim, has id "{claim_id}"; '
                     f'$t isa scilit-paper, has id "{escape_string(pid)}"; '
                     f'insert (hinging-claim: $cl, hinged-to: $t) isa scilit-hinge;').resolve()
             tx.commit()
@@ -3556,7 +3556,7 @@ def cmd_add_reported_claim(args):
 
 
 def cmd_add_reported_gap(args):
-    """Add a scilit-reported-gap (a gap stated within the paper) to a sensemaking bundle."""
+    """Add a scilit-gap (a gap stated within the paper) to a sensemaking bundle."""
     gap_id = generate_id("scgap")
     ts = get_timestamp()
     name = args.statement[:60]
@@ -3570,7 +3570,7 @@ def cmd_add_reported_gap(args):
                 sys.exit(1)
             tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'insert $g isa scilit-reported-gap, has id "{gap_id}", has name "{escape_string(name)}", '
+                f'insert $g isa scilit-gap, has id "{gap_id}", has name "{escape_string(name)}", '
                 f'has content "{escape_string(args.statement)}", '
                 f'has scilit-knowledge-goal "{escape_string(args.goal)}", has created-at {ts}; '
                 f'(sensemaking: $b, reported-gap: $g) isa scilit-sensemaking-reported-gap;'
@@ -4049,7 +4049,7 @@ def cmd_add_datum(args):
                 numclause = f', has ooevv-cell-number {float(num)}' if num is not None else ""
                 tx.query(
                     f'match $d isa ooevv-datum, has id "{did}"; '
-                    f'$v isa kefed-variable, has id "{vid}"; '
+                    f'$v isa ooevv-variable, has id "{vid}"; '
                     f'insert (datum: $d, cell-variable: $v) isa ooevv-cell, '
                     f'has ooevv-cell-value "{val}"{numclause};').resolve()
             obs_id = getattr(args, "observation", None)
