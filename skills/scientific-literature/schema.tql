@@ -507,16 +507,6 @@ entity kefed-model sub alh-artifact,
     plays kefed-model-element:model,
     plays ooevv-subject:model;
 
-# KEFED-VARIABLE - a design element (independent var, constant, or measurement).
-entity kefed-variable sub alh-domain-thing,
-    owns kefed-variable-role,
-    owns kefed-value-set,
-    owns kefed-efo-label,
-    owns scilit-curie,                 # grounded ontology concept for the variable (e.g. EFO:age, CL:...)
-    owns scilit-grounding-label,
-    owns scilit-grounding-state,
-    owns scilit-grounding-confidence;
-
 # SCILIT-PAPER-SENSEMAKING - the per-paper sensemaking bundle: what one KQED run over a
 # single paper produces. Lives in an investigation's SENSEMAKING stage, is `about` exactly
 # one paper, and groups that paper's observations, reported-claims, reported-gaps and
@@ -874,75 +864,48 @@ entity ooevv-composite-scale sub ooevv-scale,
 
 
 # =============================================================================
-# KEfED TEMPLATE / INSTANCE / DATA layer - curation by recognize-reuse-fill
-# A kefed-template is a REUSABLE experiment design (protocol graph + variable
-# definitions + typed slots). A kefed-instance is one paper's EXECUTION of a
-# template: it fills the slots with curated entities and carries the data rows
-# (a spreadsheet linking independent-variable values to the measured dependent
-# value). Curating a new paper = recognize the template, reuse it, fill it.
+# KEfED INSTANCE / DATA layer - curation by recognize-reuse-fill
+# Template = a kefed-model in "template" state (no instantiated variables).
+# A kefed-instance records one paper's execution: value-instantiations (data
+# rows) + warrant. Retired: kefed-template, kefed-slot, ooevv-slot-binding,
+# kefed-template-slot, ooevv-param-slot, kefed-variable (Task 5, Jun 2026).
 # =============================================================================
 
 # --- attributes ---
-attribute kefed-slot-role, value string;   # target-gene | normalization-control | grouping | treatment | ...
-attribute kefed-slot-kind, value string;   # gene | chemical | cell-type | antibody | ...
+attribute kefed-model-state, value string; # template (no values bound) | instantiated
+attribute scilit-warrant, value string;    # what the instance's data licenses (derived from index sets)
 attribute ooevv-cell-value, value string;  # the value a variable took in a data row (independent or measured)
 attribute ooevv-cell-number, value double; # numeric form of the cell value (for aggregation), optional
 
-# --- relations (template layer) ---
-relation kefed-template-slot,              # a template declares its typed slots
-    relates template, relates slot;
-relation ooevv-param-slot,                 # a template variable (parameter/measurement) references a slot
-    relates slotted-variable, relates slot;
+# --- additive owns on kefed-model ---
+entity kefed-model owns kefed-model-state;
 
 # --- relations (instance layer) ---
-relation ooevv-instance-of,                # an instance is an execution of a template
-    relates instance, relates template;
-relation ooevv-slot-binding,               # an instance fills a template slot with a curated entity
-    relates instance, relates slot, relates filler;
+relation ooevv-instance-of,                # an instance is an execution of a model (model-state: template)
+    relates instance, relates model;
 relation ooevv-instance-datum,             # an instance groups its data rows
     relates instance, relates datum;
-relation ooevv-cell,                       # one cell = the value a template variable took in a datum row
+relation ooevv-cell,                       # one cell = the value a variable took in a datum row
     relates datum, relates cell-variable,
     owns ooevv-cell-value, owns ooevv-cell-number;
-relation ooevv-datum-observation,          # coexistence: a data row links to its free-text observation (provenance)
+relation ooevv-datum-observation,          # a data row links to its free-text observation (provenance)
     relates datum, relates observation;
 
-# --- entities ---
-# TEMPLATE - reusable experiment design; groups its processes + variable definitions, declares slots.
-entity kefed-template sub alh-artifact,
-    owns ooevv-definition,
-    plays ooevv-set-process:container,
-    plays ooevv-set-entity:container,
-    plays kefed-template-slot:template,
-    plays ooevv-instance-of:template;
-
-# SLOT - a typed placeholder in a template, filled per-instance (target-gene, normalization-control...).
-entity kefed-slot sub alh-domain-thing,
-    owns kefed-slot-role,
-    owns kefed-slot-kind,
-    plays kefed-template-slot:slot,
-    plays ooevv-param-slot:slot,
-    plays ooevv-slot-binding:slot;
-
-# INSTANCE - one paper's execution of a template; fills slots + carries data rows; grouped under a bundle.
+# INSTANCE - one paper's execution of a model; carries data rows + warrant.
 entity kefed-instance sub alh-artifact,
+    owns scilit-warrant,
     plays ooevv-instance-of:instance,
-    plays ooevv-slot-binding:instance,
-    plays ooevv-instance-datum:instance,
-    plays ooevv-bundle-experiment:experiment;
+    plays ooevv-instance-datum:instance;
 
-# DATUM - one data row of an instance; cells hold per-variable values; links to a provenance observation.
+# DATUM - one data row; cells hold per-variable values; links to its provenance observation.
 entity ooevv-datum sub alh-domain-thing,
     plays ooevv-instance-datum:datum,
     plays ooevv-cell:datum,
     plays ooevv-datum-observation:datum;
 
 # --- additive plays on existing types ---
-# a template variable may reference a slot, and may take a per-row value in a data cell
-entity kefed-variable plays ooevv-param-slot:slotted-variable,
-    plays ooevv-cell:cell-variable;
-# curated entities fill instance slots
-entity scilit-entity plays ooevv-slot-binding:filler;
+entity kefed-model plays ooevv-instance-of:model;
+entity ooevv-variable plays ooevv-cell:cell-variable;
 # the free-text observation a data row links to for provenance/coexistence
 entity scilit-observation plays ooevv-datum-observation:observation;
 
@@ -957,10 +920,7 @@ entity scilit-observation plays ooevv-datum-observation:observation;
 # =============================================================================
 attribute ooevv-long-form, value string;
 # ooevv-quality and ooevv-process inherit ooevv-long-form from ooevv-element (no redeclaration needed).
-entity kefed-variable owns ooevv-long-form;
-entity kefed-template owns ooevv-long-form;
 entity scilit-entity owns ooevv-long-form;
-entity kefed-slot owns ooevv-definition, owns ooevv-long-form;
 
 
 # =============================================================================

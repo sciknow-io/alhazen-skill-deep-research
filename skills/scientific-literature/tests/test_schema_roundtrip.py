@@ -132,3 +132,21 @@ def test_param_mapping_rules(scratch_db):
     rows = r(scratch_db, 'match (transformation: $t, in-parameter: $i) isa ooevv-param-mapping,'
                          '  has ooevv-param-rule-kind $k; $i has name $n; fetch {"k": $k, "n": $n};')
     assert rows[0]["k"] == "aggregate-collapse-destroy" and rows[0]["n"] == "replicate"
+
+
+def test_instance_data_and_warrant(scratch_db):
+    w(scratch_db, 'insert $m isa kefed-model, has id "kefedm-t", has name "design", has kefed-model-state "template";')
+    w(scratch_db, 'insert $v isa ooevv-variable, has id "v-expr", has name "expr", has ooevv-variable-role "measurement";')
+    w(scratch_db, 'match $m isa kefed-model, has id "kefedm-t";'
+                  'insert $inst isa kefed-instance, has id "kefedi-1", has name "paperA run",'
+                  '  has scilit-warrant "supports a WT-vs-KO contrast";'
+                  ' (instance: $inst, model: $m) isa ooevv-instance-of;')
+    w(scratch_db, 'match $inst isa kefed-instance, has id "kefedi-1"; $v isa ooevv-variable, has id "v-expr";'
+                  'insert $d isa ooevv-datum, has id "dat-1";'
+                  ' (instance: $inst, datum: $d) isa ooevv-instance-datum;'
+                  ' (datum: $d, cell-variable: $v) isa ooevv-cell, has ooevv-cell-value "12.3", has ooevv-cell-number 12.3;')
+    rows = r(scratch_db, 'match $inst isa kefed-instance, has id "kefedi-1", has scilit-warrant $war;'
+                         ' (instance: $inst, datum: $d) isa ooevv-instance-datum;'
+                         ' (datum: $d, cell-variable: $v) isa ooevv-cell, has ooevv-cell-number $num;'
+                         ' fetch {"war": $war, "num": $num};')
+    assert rows[0]["war"].startswith("supports") and rows[0]["num"] == 12.3
