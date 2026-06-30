@@ -767,6 +767,10 @@ attribute ooevv-max, value double;
 attribute ooevv-allowed-value, value string;  # nominal/binary allowed value
 attribute ooevv-named-rank, value string;      # ordinal rank label (in order)
 
+# --- element vocabulary attributes ---
+attribute ooevv-variable-role, value string;   # constant | parameter | measurement
+attribute ooevv-ice-kind, value string;        # measurement | derived (for ICE variables in the bigraph)
+
 # --- relations (variable structure) ---
 relation ooevv-measures,                       # ExperimentalVariable measures a Quality
     relates measured-variable, relates quality;
@@ -774,6 +778,10 @@ relation ooevv-has-scale,                      # ExperimentalVariable has exactl
     relates scaled-variable, relates scale;
 relation ooevv-scale-parts,                    # CompositeScale hasParts sub-variables
     relates composite-scale, relates part-variable;
+
+# --- relation (element vocabulary grouping) ---
+relation ooevv-set-element,                    # an element-set groups its elements
+    relates element-set, relates element;
 
 # --- relations (protocol graph) ---
 relation ooevv-process-decomposition,          # a process decomposes into sub-processes (arbitrary depth)
@@ -796,16 +804,37 @@ relation ooevv-bundle-experiment,              # a paper's sensemaking bundle gr
     relates bundle, relates experiment;        # (one element-set / protocol graph per distinct experiment)
 
 # --- entities ---
-# QUALITY - curated generic measurand (concentration, signal-intensity, viability...). Reusable vocab.
-entity ooevv-quality sub alh-vocabulary-type,
+
+# ELEMENT - base for everything an element-set contains (concrete parent, not abstract).
+entity ooevv-element sub alh-domain-thing,
+    owns ooevv-definition, owns ooevv-long-form, owns scilit-curie,
+    plays ooevv-set-element:element;
+
+# ELEMENT-SET - reusable vocabulary commitment for a CLASS of experiments (e.g. "RNASeq").
+entity ooevv-element-set sub alh-artifact,
     owns ooevv-definition,
-    owns scilit-curie,                  # optional external hook
+    plays ooevv-set-element:element-set;
+
+# ENTITY split: material entity (obo:BFO_0000040) vs ICE (obo:IAO_0000030).
+entity ooevv-material-entity sub ooevv-element;        # obo:BFO_0000040
+
+# QUALITY - curated generic measurand (concentration, signal-intensity, viability...). Reusable vocab.
+entity ooevv-quality sub ooevv-element,
     owns scilit-grounding-confidence,
     plays ooevv-measures:quality;
 
-# PROCESS - a protocol step; hierarchical, consumes/produces entities, binds parameters.
-entity ooevv-process sub alh-domain-thing,
-    owns ooevv-definition,
+# VARIABLE - an ICE that takes values (obo:IAO_0000030); grounds to EFO via kefed-efo-label.
+entity ooevv-variable sub ooevv-element,               # obo:IAO_0000030
+    owns ooevv-variable-role,
+    owns ooevv-ice-kind,
+    owns kefed-efo-label,
+    owns scilit-grounding-label, owns scilit-grounding-state, owns scilit-grounding-confidence,
+    plays ooevv-measures:measured-variable,
+    plays ooevv-has-scale:scaled-variable,
+    plays ooevv-scale-parts:part-variable;
+
+# PROCESS - a protocol step (obo:BFO_0000015); hierarchical, consumes/produces entities, binds parameters.
+entity ooevv-process sub ooevv-element,                # obo:BFO_0000015
     plays ooevv-process-decomposition:parent-process,
     plays ooevv-process-decomposition:sub-process,
     plays ooevv-process-input:consuming-process,
@@ -813,12 +842,12 @@ entity ooevv-process sub alh-domain-thing,
     plays ooevv-parameter-binding:binding-process,
     plays ooevv-produced-by:terminal-process,
     plays ooevv-set-process:contained-process;
-entity ooevv-assay sub ooevv-process;                 # a measurement-producing assay (qPCR, western blot)
-entity ooevv-material-processing sub ooevv-process;   # a sample-prep / transformation of material
-entity ooevv-data-transformation sub ooevv-process;   # an analysis/computation step
+entity ooevv-assay sub ooevv-process;                  # obo:OBI_0000070
+entity ooevv-material-processing sub ooevv-process;    # obo:OBI_0000094
+entity ooevv-data-transformation sub ooevv-process;    # obo:OBI_0200000
 
-# SCALE - the computational type of a variable's values (one per variable).
-entity ooevv-scale sub alh-domain-thing,
+# SCALE - the computational type of a variable's values (keep OOEVV's own taxonomy).
+entity ooevv-scale sub ooevv-element,
     owns ooevv-unit,
     plays ooevv-has-scale:scale;
 entity ooevv-nominal-scale sub ooevv-scale, owns ooevv-allowed-value @card(0..);
@@ -828,32 +857,6 @@ entity ooevv-numeric-scale sub ooevv-scale, owns ooevv-min, owns ooevv-max;
 entity ooevv-file-scale sub ooevv-scale;
 entity ooevv-composite-scale sub ooevv-scale,
     plays ooevv-scale-parts:composite-scale;
-
-# --- additive plays on existing types ---
-# kefed-variable IS the OOEVV ExperimentalVariable (already owns kefed-variable-role + grounding hooks).
-entity kefed-variable
-    plays ooevv-measures:measured-variable,
-    plays ooevv-has-scale:scaled-variable,
-    plays ooevv-scale-parts:part-variable,
-    plays ooevv-parameter-binding:bound-parameter,
-    plays ooevv-parameter-target:targeting-parameter,
-    plays ooevv-produced-by:produced-measurement,
-    owns ooevv-definition;
-# kefed-model IS the OOEVV ElementSet = ONE experiment (a paper may have several).
-entity kefed-model
-    plays ooevv-set-process:container,
-    plays ooevv-set-entity:container,
-    plays ooevv-bundle-experiment:experiment;
-# scilit-paper-sensemaking (the per-paper bundle) groups the paper's separate experiments.
-entity scilit-paper-sensemaking
-    plays ooevv-bundle-experiment:bundle;
-# scilit-entity is the curated material/specificity entity (already owns entity-kind + grounding hooks).
-entity scilit-entity
-    plays ooevv-process-input:input-entity,
-    plays ooevv-process-output:output-entity,
-    plays ooevv-parameter-target:target-entity,
-    plays ooevv-set-entity:contained-entity,
-    owns ooevv-definition;
 
 
 # =============================================================================
@@ -940,8 +943,7 @@ entity scilit-observation plays ooevv-datum-observation:observation;
 # long-form as a crisp expansion and the definition as the fuller explanation.
 # =============================================================================
 attribute ooevv-long-form, value string;
-entity ooevv-quality owns ooevv-long-form;
-entity ooevv-process owns ooevv-long-form;
+# ooevv-quality and ooevv-process inherit ooevv-long-form from ooevv-element (no redeclaration needed).
 entity kefed-variable owns ooevv-long-form;
 entity kefed-template owns ooevv-long-form;
 entity scilit-entity owns ooevv-long-form;
