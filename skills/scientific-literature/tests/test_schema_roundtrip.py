@@ -102,3 +102,33 @@ def test_kefed_bigraph(scratch_db):
     bearers = r(scratch_db, 'match (binding-bearer: $b, bound-parameter: $par) isa ooevv-parameter-binding;'
                             ' $par has name $pn; fetch {"pn": $pn};')
     assert sorted(x["pn"] for x in bearers) == ["genotype", "treatment"]
+
+
+def test_param_mapping_rules(scratch_db):
+    # --- Task-3 coverage gap: prove ooevv-assay inherits ooevv-produced-by roles ---
+    w(scratch_db, 'insert $a isa ooevv-assay, has id "assay-gap-cover", has name "gap-assay";')
+    w(scratch_db, 'insert $v isa ooevv-variable, has id "var-gap-meas", has name "gap-measurement",'
+                  '  has ooevv-variable-role "measurement";')
+    w(scratch_db, 'match $a isa ooevv-assay, has id "assay-gap-cover";'
+                  ' $v isa ooevv-variable, has id "var-gap-meas";'
+                  ' insert (produced-variable: $v, producing-process: $a) isa ooevv-produced-by;')
+    gap_rows = r(scratch_db, 'match $a isa ooevv-assay, has id "assay-gap-cover";'
+                             ' (produced-variable: $v, producing-process: $a) isa ooevv-produced-by;'
+                             ' $v has name $n; fetch {"n": $n};')
+    assert gap_rows and gap_rows[0]["n"] == "gap-measurement", \
+        f"ooevv-assay bigraph role inheritance failed: {gap_rows!r}"
+
+    # --- Main test: data-transformation parameter-mapping rules ---
+    w(scratch_db, 'insert $t isa ooevv-data-transformation, has id "dt-mean", has name "mean over replicates";')
+    w(scratch_db, 'insert $i isa ooevv-variable, has id "var-rep", has name "replicate",'
+                  '  has ooevv-variable-role "parameter";')
+    w(scratch_db, 'insert $o isa ooevv-variable, has id "var-mean", has name "mean-expr",'
+                  '  has ooevv-variable-role "measurement", has ooevv-ice-kind "derived";')
+    # mean DESTROYS the replicate index: in-parameter present, out-parameter absent, kind=aggregate-collapse-destroy
+    w(scratch_db, 'match $t isa ooevv-data-transformation, has id "dt-mean";'
+                  ' $i isa ooevv-variable, has id "var-rep";'
+                  ' insert (transformation: $t, in-parameter: $i) isa ooevv-param-mapping,'
+                  '  has ooevv-param-rule-kind "aggregate-collapse-destroy";')
+    rows = r(scratch_db, 'match (transformation: $t, in-parameter: $i) isa ooevv-param-mapping,'
+                         '  has ooevv-param-rule-kind $k; $i has name $n; fetch {"k": $k, "n": $n};')
+    assert rows[0]["k"] == "aggregate-collapse-destroy" and rows[0]["n"] == "replicate"

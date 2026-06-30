@@ -758,6 +758,7 @@ attribute ooevv-named-rank, value string;      # ordinal rank label (in order)
 # --- element vocabulary attributes ---
 attribute ooevv-variable-role, value string;   # constant | parameter | measurement
 attribute ooevv-ice-kind, value string;        # measurement | derived (for ICE variables in the bigraph)
+attribute ooevv-param-rule-kind, value string; # passthrough | aggregate-collapse-destroy | combine | derive
 
 # --- relations (variable structure) ---
 relation ooevv-measures,                       # ExperimentalVariable measures a Quality
@@ -790,6 +791,11 @@ relation ooevv-parameter-target,               # a parameter's value targets a c
     relates targeting-parameter, relates target-entity;
 relation ooevv-produced-by,                    # a measurement/derived variable is produced by a process
     relates produced-variable, relates producing-process;
+relation ooevv-param-mapping,                  # how a data-transformation maps input params to output params
+    relates transformation,
+    relates in-parameter,
+    relates out-parameter,
+    owns ooevv-param-rule-kind;
 relation ooevv-set-process,                    # element-set groups its processes
     relates container, relates contained-process;
 relation ooevv-set-entity,                     # element-set groups its entities
@@ -835,7 +841,9 @@ entity ooevv-variable sub ooevv-element,               # obo:IAO_0000030
     plays ooevv-scale-parts:part-variable,
     plays ooevv-parameter-binding:bound-parameter,
     plays ooevv-parameter-target:targeting-parameter,
-    plays ooevv-produced-by:produced-variable;
+    plays ooevv-produced-by:produced-variable,
+    plays ooevv-param-mapping:in-parameter,
+    plays ooevv-param-mapping:out-parameter;
 
 # PROCESS - a protocol step (obo:BFO_0000015); hierarchical, consumes/produces entities, binds parameters.
 entity ooevv-process sub ooevv-element,                # obo:BFO_0000015
@@ -849,7 +857,8 @@ entity ooevv-process sub ooevv-element,                # obo:BFO_0000015
     plays ooevv-set-process:contained-process;
 entity ooevv-assay sub ooevv-process;                  # obo:OBI_0000070
 entity ooevv-material-processing sub ooevv-process;    # obo:OBI_0000094
-entity ooevv-data-transformation sub ooevv-process;    # obo:OBI_0200000
+entity ooevv-data-transformation sub ooevv-process,    # obo:OBI_0200000
+    plays ooevv-param-mapping:transformation;
 
 # SCALE - the computational type of a variable's values (keep OOEVV's own taxonomy).
 entity ooevv-scale sub ooevv-element,
