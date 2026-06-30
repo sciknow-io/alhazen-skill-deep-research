@@ -68,3 +68,37 @@ def test_ooevv_elementset_and_elements(scratch_db):
       ' (measured-variable: $v, quality: $q) isa ooevv-measures; $q has name $n; fetch {"n": $n};')
     assert qr, "Expected ooevv-measures round-trip to return a row"
     assert qr[0]["n"] == "expression level"
+
+
+def _seed_elementset(db):
+    w(db, 'insert $s isa ooevv-element-set, has id "ooevv-es-x", has name "X";')
+
+
+def test_kefed_bigraph(scratch_db):
+    _seed_elementset(scratch_db)
+    # model + subject material entity + a manipulation process + a measurement variable
+    w(scratch_db, 'insert $m isa kefed-model, has id "kefedm-1", has name "qPCR run",'
+                  '  has content "protocol", has format "kefed-bigraph";')
+    w(scratch_db, 'match $m isa kefed-model, has id "kefedm-1";'
+                  'insert $subj isa ooevv-material-entity, has id "me-subj", has name "mouse";'
+                  ' (model: $m, subject-entity: $subj) isa ooevv-subject;')
+    w(scratch_db, 'match $subj isa ooevv-material-entity, has id "me-subj";'
+                  'insert $p isa ooevv-material-processing, has id "mp-1", has name "knockout";'
+                  ' (input-entity: $subj, consuming-process: $p) isa ooevv-process-input;')
+    # a treatment parameter bound at the manipulation process AND a genotype param on the entity
+    w(scratch_db, 'match $p isa ooevv-material-processing, has id "mp-1";'
+                  'insert $par isa ooevv-variable, has id "var-treat", has name "treatment",'
+                  '  has ooevv-variable-role "parameter";'
+                  ' (binding-bearer: $p, bound-parameter: $par) isa ooevv-parameter-binding;')
+    w(scratch_db, 'match $subj isa ooevv-material-entity, has id "me-subj";'
+                  'insert $g isa ooevv-variable, has id "var-geno", has name "genotype",'
+                  '  has ooevv-variable-role "parameter";'
+                  ' (binding-bearer: $subj, bound-parameter: $g) isa ooevv-parameter-binding;')
+    # subject reads back
+    sj = r(scratch_db, 'match $m isa kefed-model, has id "kefedm-1";'
+                       ' (model: $m, subject-entity: $e) isa ooevv-subject; $e has name $n; fetch {"n": $n};')
+    assert sj[0]["n"] == "mouse"
+    # BOTH a process and an entity bear a parameter
+    bearers = r(scratch_db, 'match (binding-bearer: $b, bound-parameter: $par) isa ooevv-parameter-binding;'
+                            ' $par has name $pn; fetch {"pn": $pn};')
+    assert sorted(x["pn"] for x in bearers) == ["genotype", "treatment"]

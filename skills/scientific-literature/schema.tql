@@ -437,14 +437,6 @@ attribute scilit-mech-type, value string;        # activates|inhibits|maintains|
 attribute scilit-hinge-term-id, value string;    # soft FK to a Teufel-CFC alh-vocabulary-type
 
 # --- relations ---
-relation kefed-element,           # a KEfED model groups its design variables
-    relates model,
-    relates variable;
-
-relation kefed-observed-via,      # an observation instantiates a KEfED model (template)
-    relates observation,
-    relates model;
-
 relation kefed-licenses,          # warrant table as data: experiment-type term -> warrant term
     relates licensing-type,
     relates licensed-warrant;
@@ -510,12 +502,10 @@ relation scilit-mechanistic-link sub scilit-relation, # System-3 causal edge (a 
     relates mech-target;
 
 # --- entities ---
-# KEFED-MODEL - an experimental design (protocol) as an information artifact.
-# Experiment type via alh-classification -> experiment-type vocab term;
-# warrant DERIVED by following that term's kefed-licenses edge (not stored here).
+# KEFED-MODEL - the bigraph (built from one element-set). Roles defined in OOEVV section below.
 entity kefed-model sub alh-artifact,
-    plays kefed-element:model,
-    plays kefed-observed-via:model;
+    plays kefed-model-element:model,
+    plays ooevv-subject:model;
 
 # KEFED-VARIABLE - a design element (independent var, constant, or measurement).
 entity kefed-variable sub alh-domain-thing,
@@ -525,8 +515,7 @@ entity kefed-variable sub alh-domain-thing,
     owns scilit-curie,                 # grounded ontology concept for the variable (e.g. EFO:age, CL:...)
     owns scilit-grounding-label,
     owns scilit-grounding-state,
-    owns scilit-grounding-confidence,
-    plays kefed-element:variable;
+    owns scilit-grounding-confidence;
 
 # SCILIT-PAPER-SENSEMAKING - the per-paper sensemaking bundle: what one KQED run over a
 # single paper produces. Lives in an investigation's SENSEMAKING stage, is `about` exactly
@@ -539,7 +528,6 @@ entity scilit-paper-sensemaking sub alh-sensemaking-note;
 entity scilit-observation sub alh-sensemaking-note,
     owns scilit-knowledge-level,
     owns scilit-bio-scale,
-    plays kefed-observed-via:observation,
     plays scilit-addresses:addressing-note;
 
 # SCILIT-REPORTED-CLAIM - a claim asserted WITHIN one paper (sensemaking). Support is
@@ -783,6 +771,12 @@ relation ooevv-scale-parts,                    # CompositeScale hasParts sub-var
 relation ooevv-set-element,                    # an element-set groups its elements
     relates element-set, relates element;
 
+# --- KEfED bigraph relations ---
+relation kefed-model-element,                  # a model groups the elements that form its bigraph
+    relates model, relates element;
+relation ooevv-subject,                        # the model's SOURCE node (experimental subject)
+    relates model, relates subject-entity;
+
 # --- relations (protocol graph) ---
 relation ooevv-process-decomposition,          # a process decomposes into sub-processes (arbitrary depth)
     relates parent-process, relates sub-process;
@@ -790,12 +784,12 @@ relation ooevv-process-input,                  # material flow: entity consumed 
     relates input-entity, relates consuming-process;
 relation ooevv-process-output,                 # material flow: entity produced by a process
     relates producing-process, relates output-entity;
-relation ooevv-parameter-binding,              # independent variable set AT a process step (the KEfED dependency)
-    relates binding-process, relates bound-parameter;
+relation ooevv-parameter-binding,              # parameter set ON a process OR entity (KEfED dependency; dual bearer)
+    relates binding-bearer, relates bound-parameter;
 relation ooevv-parameter-target,               # a parameter's value targets a curated entity (specificity)
     relates targeting-parameter, relates target-entity;
-relation ooevv-produced-by,                    # measurement produced by the terminal process
-    relates produced-measurement, relates terminal-process;
+relation ooevv-produced-by,                    # a measurement/derived variable is produced by a process
+    relates produced-variable, relates producing-process;
 relation ooevv-set-process,                    # element-set groups its processes
     relates container, relates contained-process;
 relation ooevv-set-entity,                     # element-set groups its entities
@@ -816,7 +810,13 @@ entity ooevv-element-set sub alh-artifact,
     plays ooevv-set-element:element-set;
 
 # ENTITY split: material entity (obo:BFO_0000040) vs ICE (obo:IAO_0000030).
-entity ooevv-material-entity sub ooevv-element;        # obo:BFO_0000040
+entity ooevv-material-entity sub ooevv-element,        # obo:BFO_0000040
+    plays kefed-model-element:element,
+    plays ooevv-subject:subject-entity,
+    plays ooevv-process-input:input-entity,
+    plays ooevv-process-output:output-entity,
+    plays ooevv-parameter-binding:binding-bearer,
+    plays ooevv-parameter-target:target-entity;
 
 # QUALITY - curated generic measurand (concentration, signal-intensity, viability...). Reusable vocab.
 entity ooevv-quality sub ooevv-element,
@@ -829,18 +829,23 @@ entity ooevv-variable sub ooevv-element,               # obo:IAO_0000030
     owns ooevv-ice-kind,
     owns kefed-efo-label,
     owns scilit-grounding-label, owns scilit-grounding-state, owns scilit-grounding-confidence,
+    plays kefed-model-element:element,
     plays ooevv-measures:measured-variable,
     plays ooevv-has-scale:scaled-variable,
-    plays ooevv-scale-parts:part-variable;
+    plays ooevv-scale-parts:part-variable,
+    plays ooevv-parameter-binding:bound-parameter,
+    plays ooevv-parameter-target:targeting-parameter,
+    plays ooevv-produced-by:produced-variable;
 
 # PROCESS - a protocol step (obo:BFO_0000015); hierarchical, consumes/produces entities, binds parameters.
 entity ooevv-process sub ooevv-element,                # obo:BFO_0000015
+    plays kefed-model-element:element,
     plays ooevv-process-decomposition:parent-process,
     plays ooevv-process-decomposition:sub-process,
     plays ooevv-process-input:consuming-process,
     plays ooevv-process-output:producing-process,
-    plays ooevv-parameter-binding:binding-process,
-    plays ooevv-produced-by:terminal-process,
+    plays ooevv-parameter-binding:binding-bearer,
+    plays ooevv-produced-by:producing-process,
     plays ooevv-set-process:contained-process;
 entity ooevv-assay sub ooevv-process;                  # obo:OBI_0000070
 entity ooevv-material-processing sub ooevv-process;    # obo:OBI_0000094
@@ -897,7 +902,6 @@ relation ooevv-datum-observation,          # coexistence: a data row links to it
 # TEMPLATE - reusable experiment design; groups its processes + variable definitions, declares slots.
 entity kefed-template sub alh-artifact,
     owns ooevv-definition,
-    plays kefed-element:model,              # groups its reusable design variables
     plays ooevv-set-process:container,
     plays ooevv-set-entity:container,
     plays kefed-template-slot:template,
