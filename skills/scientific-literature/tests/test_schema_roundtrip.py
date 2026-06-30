@@ -152,6 +152,25 @@ def test_instance_data_and_warrant(scratch_db):
     assert rows[0]["war"].startswith("supports") and rows[0]["num"] == 12.3
 
 
+def test_investigation_iterations(scratch_db):
+    w(scratch_db, 'insert $i isa scilit-investigation, has id "scinv-1", has name "inv", has content "goal";')
+    w(scratch_db, 'insert $c isa scilit-corpus, has id "collection-1", has name "corpus";')
+    w(scratch_db, 'match $i isa scilit-investigation, has id "scinv-1";'
+                  'insert $it isa scilit-iteration, has id "scit-1", has name "iteration 1", has scilit-iteration-index 1;'
+                  ' (investigation: $i, iteration: $it) isa scilit-investigation-iteration;')
+    w(scratch_db, 'match $it isa scilit-iteration, has id "scit-1"; $c isa scilit-corpus, has id "collection-1";'
+                  'insert (iteration: $it, corpus: $c) isa scilit-iteration-corpus;')
+    w(scratch_db, 'match $it isa scilit-iteration, has id "scit-1";'
+                  'insert $ph isa scilit-investigation-phase, has id "scph-1", has name "discovery", has scilit-phase "discovery";'
+                  ' (iteration: $it, stage: $ph) isa scilit-iteration-stage;')
+    rows = r(scratch_db, 'match $i isa scilit-investigation, has id "scinv-1";'
+                         ' (investigation: $i, iteration: $it) isa scilit-investigation-iteration;'
+                         ' $it has scilit-iteration-index $idx;'
+                         ' (iteration: $it, stage: $ph) isa scilit-iteration-stage; $ph has scilit-phase $stage;'
+                         ' fetch {"idx": $idx, "stage": $stage};')
+    assert rows[0]["idx"] == 1 and rows[0]["stage"] == "discovery"
+
+
 def test_rhetorical_span_anchored(scratch_db):
     # a paper + sentence fragment (offset/length present), a claim anchored to it, AZ + obs link
     w(scratch_db, 'insert $p isa scilit-paper, has id "scilit-paper-r", has name "paperR";')

@@ -77,6 +77,8 @@ attribute scilit-investigation-status, value string;
 attribute scilit-phase, value string;
 # Iteration/cycle index: an investigation and its stage notes can iterate over cycles.
 attribute scilit-iteration-number, value integer;
+# First-class iteration index: ordinal position of a scilit-iteration within its investigation.
+attribute scilit-iteration-index, value integer;
 
 # Investigation typing (retained, but the deep-dive/corpus distinction is retired:
 # a single-paper KQED run is now a scilit-paper-sensemaking note, not an investigation).
@@ -353,6 +355,16 @@ entity scilit-citation-impact sub alh-analysis-note,
 # ENTITY TYPES - Scientific Literature Investigations
 # -----------------------------------------------------------------------------
 
+# SCILIT-ITERATION - A first-class iteration (round) within an investigation, owning
+# its corpus configuration and stage notes for that round. Sub alh-note so it inherits
+# id, name, content, created-at, confidence, and all threading/aboutness plays.
+entity scilit-iteration sub alh-note,
+    owns scilit-iteration-index,
+    plays scilit-investigation-iteration:iteration,
+    plays scilit-iteration-corpus:iteration,
+    plays scilit-iteration-stage:iteration;
+
+
 # SCILIT-INVESTIGATION - A named, dated, purpose-driven inquiry. Typed by
 # scilit-investigation-type: `corpus` (the default - aboutness subject is a
 # scilit-corpus) or `deep-dive` (aboutness subject is a single focal scilit-paper;
@@ -558,15 +570,31 @@ entity alh-vocabulary-type plays kefed-licenses:licensing-type,
 # declare explicit plays for each specialized role (TypeDB does not infer them).
 # =============================================================================
 
+# --- iteration layer: investigation owns an ordered sequence of first-class iterations ---
+
+# investigation -> ordered iteration (a first-class round of corpus-config + stage work)
+relation scilit-investigation-iteration,
+    relates investigation, relates iteration;
+
+# iteration -> corpus (this round's paper set / corpus configuration)
+relation scilit-iteration-corpus,
+    relates iteration, relates corpus;
+
+# iteration -> stage note (one note per stage per round, replacing investigation-phasing)
+relation scilit-iteration-stage,
+    relates iteration, relates stage;
+
+
 # --- stage spine + investigation-level edges (sub alh-note-threading / alh-aboutness) ---
 
 # investigation -> grounding-policy
 relation scilit-investigation-grounding sub alh-note-threading,
     relates investigation as parent-note, relates policy as child-note;
 
-# investigation -> stage note (one per stage per iteration)
-relation scilit-investigation-phasing sub alh-note-threading,
-    relates investigation as parent-note, relates phase as child-note;
+# RETIRED: scilit-investigation-phasing (investigation->phase) is superseded by
+# scilit-iteration-stage (iteration->stage); left orphaned for Task 8 retirement sweep.
+# scilit-investigation-phasing sub alh-note-threading,
+#     relates investigation as parent-note, relates phase as child-note;
 
 # investigation -> corpus (its PRIMARY analyzed paper set; exactly one per investigation)
 relation scilit-investigation-scope sub alh-aboutness,
@@ -656,7 +684,7 @@ relation scilit-synthesis-concept sub alh-aboutness,
 # --- explicit plays for the specialized roles ---
 entity scilit-investigation
     plays scilit-investigation-grounding:investigation,
-    plays scilit-investigation-phasing:investigation,
+    plays scilit-investigation-iteration:investigation,
     plays scilit-investigation-scope:investigation,
     plays scilit-investigation-aux-corpus:investigation,
     plays scilit-investigation-focus:investigation,
@@ -666,7 +694,7 @@ entity scilit-investigation
     plays scilit-investigation-synthesis:investigation;
 
 entity scilit-investigation-phase
-    plays scilit-investigation-phasing:phase,
+    plays scilit-iteration-stage:stage,
     plays scilit-phase-faceting:phase,
     plays scilit-phase-sensemaking:phase;
 
@@ -725,7 +753,8 @@ entity scilit-paper
     plays scilit-hinge:hinged-to;
 
 entity scilit-corpus plays scilit-investigation-scope:corpus,
-    plays scilit-investigation-aux-corpus:corpus;
+    plays scilit-investigation-aux-corpus:corpus,
+    plays scilit-iteration-corpus:corpus;
 
 entity scilit-ontology-term plays scilit-synthesis-concept:concept;
 
