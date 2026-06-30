@@ -75,8 +75,6 @@ attribute scilit-usage-type, value string;
 attribute scilit-investigation-status, value string;
 # scilit-phase: discovery|ingest|sensemaking|analysis|report
 attribute scilit-phase, value string;
-# Iteration/cycle index: an investigation and its stage notes can iterate over cycles.
-attribute scilit-iteration-number, value integer;
 # First-class iteration index: ordinal position of a scilit-iteration within its investigation.
 attribute scilit-iteration-index, value integer;
 
@@ -379,8 +377,7 @@ entity scilit-iteration sub alh-note,
 entity scilit-investigation sub alh-note,
     owns scilit-investigation-status,
     owns scilit-investigation-type,
-    owns scilit-investigation-question,
-    owns scilit-iteration-number;
+    owns scilit-investigation-question;
 
 
 # SCILIT-INVESTIGATION-PHASE - A single phase note threaded under an investigation.
@@ -391,8 +388,7 @@ entity scilit-investigation sub alh-note,
 # from alh-note. One phase note per (investigation, phase) is enforced by the
 # record-phase upsert in the CLI.
 entity scilit-investigation-phase sub alh-note,
-    owns scilit-phase,
-    owns scilit-iteration-number;
+    owns scilit-phase;
 
 
 # Additive extension: core artifact type owns full-text kind
@@ -438,8 +434,6 @@ relation scilit-dataset-usage,
 # =============================================================================
 
 # --- structural attributes ---
-attribute kefed-variable-role, value string;     # parameter | constant | measurement
-attribute kefed-value-set, value string;         # e.g. "WT|KO"
 attribute kefed-efo-label, value string;         # EFO factor annotation (text)
 attribute scilit-knowledge-level, value string;  # observation|association|assertion|prediction (Biolink)
 attribute scilit-bio-scale, value string;        # molecular|cellular|tissue|organism
@@ -590,11 +584,6 @@ relation scilit-iteration-stage,
 # investigation -> grounding-policy
 relation scilit-investigation-grounding sub alh-note-threading,
     relates investigation as parent-note, relates policy as child-note;
-
-# RETIRED: scilit-investigation-phasing (investigation->phase) is superseded by
-# scilit-iteration-stage (iteration->stage); left orphaned for Task 8 retirement sweep.
-# scilit-investigation-phasing sub alh-note-threading,
-#     relates investigation as parent-note, relates phase as child-note;
 
 # investigation -> corpus (its PRIMARY analyzed paper set; exactly one per investigation)
 relation scilit-investigation-scope sub alh-aboutness,
@@ -820,9 +809,6 @@ relation ooevv-set-process,                    # element-set groups its processe
     relates container, relates contained-process;
 relation ooevv-set-entity,                     # element-set groups its entities
     relates container, relates contained-entity;
-relation ooevv-bundle-experiment,              # a paper's sensemaking bundle groups its SEPARATE experiments
-    relates bundle, relates experiment;        # (one element-set / protocol graph per distinct experiment)
-
 # --- entities ---
 
 # ELEMENT - base for everything an element-set contains (concrete parent, not abstract).

@@ -192,3 +192,25 @@ def test_rhetorical_span_anchored(scratch_db):
     # claim -> observation provenance hop
     obs = r(scratch_db, 'match (claim: $c, observation: $o) isa scilit-claim-observation; $o has id $oid; fetch {"oid": $oid};')
     assert obs[0]["oid"] == "obs-1"
+
+
+def test_no_retired_types_remain():
+    """Guard: ensure retired type definitions are absent from schema.tql.
+
+    Uses precise definition-level patterns (e.g. 'entity kefed-variable ')
+    to avoid matching substring occurrences in comments or attribute names.
+    ooevv-quality is intentionally KEPT (it is the measurand a variable measures).
+    """
+    import pathlib
+    txt = pathlib.Path(__file__).resolve().parent.parent.joinpath("schema.tql").read_text()
+    retired_patterns = [
+        "entity kefed-slot ",
+        "entity kefed-template ",
+        "entity kefed-variable ",
+        "relation kefed-element",
+        "relation kefed-observed-via",
+        "entity scilit-reported-claim",
+        "entity scilit-reported-gap",
+    ]
+    present = [p for p in retired_patterns if p in txt]
+    assert not present, f"retired types still referenced as definitions: {present}"
