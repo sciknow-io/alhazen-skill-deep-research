@@ -4,12 +4,15 @@ Pytest harness for scientific-literature schema tests.
 Provides:
   - scratch_db fixture: yields a typedb driver connected to a freshly-provisioned
     `alh_scilit_schema_test` DB (core alh- schema + current schema.tql), dropped on teardown.
+  - authoring_db fixture: scratch_db + kqed.DB and scientific_literature.TYPEDB_DATABASE
+    monkeypatched to SCRATCH_DB so real cmd_*/kqed.* functions write to the scratch DB.
   - w(driver, q): write transaction helper (executes query and commits).
   - r(driver, q): read transaction helper (returns list of rows).
 
 The scratch DB is NEVER `alh_deep_research` -- always `alh_scilit_schema_test`.
 """
 import os
+import sys
 import subprocess
 import pytest
 from pathlib import Path
@@ -108,3 +111,15 @@ def r(driver, q: str) -> list:
     """Execute a read/fetch query against SCRATCH_DB and return rows as a list."""
     with driver.transaction(SCRATCH_DB, TransactionType.READ) as tx:
         return list(tx.query(q).resolve())
+
+
+@pytest.fixture
+def authoring_db(scratch_db, monkeypatch):
+    """scratch_db + the authoring modules pointed at it, so real cmd_*/kqed.* write to the scratch DB."""
+    skill_dir = str(SKILL_DIR)
+    if skill_dir not in sys.path:
+        sys.path.insert(0, skill_dir)
+    import kqed, scientific_literature
+    monkeypatch.setattr(kqed, "DB", SCRATCH_DB)
+    monkeypatch.setattr(scientific_literature, "TYPEDB_DATABASE", SCRATCH_DB)
+    return scratch_db

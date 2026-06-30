@@ -627,6 +627,13 @@ relation scilit-sensemaking-reported-gap sub alh-note-threading,
 relation scilit-sensemaking-mechanism,
     relates sensemaking, relates mechanism;
 
+# bundle -> a KEfED experiment (model template or instance run) belonging to this paper
+relation scilit-sensemaking-experiment,
+    relates sensemaking, relates experiment;
+entity scilit-paper-sensemaking plays scilit-sensemaking-experiment:sensemaking;
+entity kefed-model plays scilit-sensemaking-experiment:experiment;
+entity kefed-instance plays scilit-sensemaking-experiment:experiment;
+
 # reported-claim -> the mechanistic-link(s) it asserts (so each mechanism traces to its claim)
 relation scilit-claim-mechanism,
     relates claim, relates mechanism;
