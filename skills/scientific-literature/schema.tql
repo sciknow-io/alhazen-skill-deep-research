@@ -320,7 +320,7 @@ entity scilit-faceting-note sub alh-analysis-pipeline-note,
 # `owns` only.
 
 # SCILIT-SYNTHESIZED-CLAIM - a claim reasoned ACROSS many papers (analysis).
-# Distinct from scilit-reported-claim (a claim asserted WITHIN one paper - sensemaking).
+# Distinct from scilit-claim (a claim asserted WITHIN one paper - sensemaking).
 # Backed by scilit-evidence warrants; threaded under the investigation.
 entity scilit-synthesized-claim sub alh-analysis-note,
     owns scilit-claim-type,
@@ -328,7 +328,7 @@ entity scilit-synthesized-claim sub alh-analysis-note,
 
 
 # SCILIT-SYNTHESIZED-GAP - a knowledge gap reasoned ACROSS many papers (analysis).
-# Distinct from scilit-reported-gap (a gap stated WITHIN one paper - sensemaking).
+# Distinct from scilit-gap (a gap stated WITHIN one paper - sensemaking).
 entity scilit-synthesized-gap sub alh-analysis-note,
     owns scilit-knowledge-goal;
 
@@ -520,18 +520,19 @@ entity scilit-observation sub alh-sensemaking-note,
     owns scilit-bio-scale,
     plays scilit-addresses:addressing-note;
 
-# SCILIT-REPORTED-CLAIM - a claim asserted WITHIN one paper (sensemaking). Support is
+# SCILIT-CLAIM - a claim asserted WITHIN one paper (sensemaking). Support is
 # per-claim: internal observations (scilit-claim-observation) and/or external citations
-# (scilit-hinge to another paper or its reported-claim).
-entity scilit-reported-claim sub alh-sensemaking-note,
+# (scilit-hinge to another paper or its claim). Span-anchored to a scilit-sentence
+# (or other alh-fragment) via alh-derivation (inherited from alh-information-content-entity).
+entity scilit-claim sub alh-sensemaking-note,
     owns scilit-claim-type,
     owns scilit-claim-statement,
     owns scilit-rhetorical-role,       # AZ / argumentative zone within the paper's discourse
     plays scilit-addresses:addressing-note,
     plays scilit-claim-mechanism:claim;
 
-# SCILIT-REPORTED-GAP - a gap stated WITHIN one paper (sensemaking).
-entity scilit-reported-gap sub alh-sensemaking-note,
+# SCILIT-GAP - a knowledge gap stated WITHIN one paper (sensemaking).
+entity scilit-gap sub alh-sensemaking-note,
     owns scilit-knowledge-goal,
     owns scilit-gap-provenance,
     plays scilit-addresses:gap;
@@ -614,9 +615,9 @@ relation scilit-sensemaking-mechanism,
 relation scilit-claim-mechanism,
     relates claim, relates mechanism;
 
-# reported-claim -> observation (internal data support)
-relation scilit-claim-observation sub alh-note-threading,
-    relates reported-claim as parent-note, relates observation as child-note;
+# claim -> observation (internal data support / provenance grounds)
+relation scilit-claim-observation,
+    relates claim, relates observation;
 
 # --- ANALYSIS stage: synthesized claims/gaps, evidence warrants, citation impact ---
 
@@ -681,14 +682,14 @@ entity scilit-observation
     plays scilit-sensemaking-observation:observation,
     plays scilit-claim-observation:observation;
 
-entity scilit-reported-claim
+entity scilit-claim
     plays scilit-sensemaking-reported-claim:reported-claim,
-    plays scilit-claim-observation:reported-claim,
+    plays scilit-claim-observation:claim,
     plays scilit-evidence-grounds:ground-claim,
     plays scilit-hinge:hinging-claim,
     plays scilit-hinge:hinged-to;
 
-entity scilit-reported-gap
+entity scilit-gap
     plays scilit-sensemaking-reported-gap:reported-gap;
 
 entity scilit-synthesized-claim

@@ -150,3 +150,26 @@ def test_instance_data_and_warrant(scratch_db):
                          ' (datum: $d, cell-variable: $v) isa ooevv-cell, has ooevv-cell-number $num;'
                          ' fetch {"war": $war, "num": $num};')
     assert rows[0]["war"].startswith("supports") and rows[0]["num"] == 12.3
+
+
+def test_rhetorical_span_anchored(scratch_db):
+    # a paper + sentence fragment (offset/length present), a claim anchored to it, AZ + obs link
+    w(scratch_db, 'insert $p isa scilit-paper, has id "scilit-paper-r", has name "paperR";')
+    w(scratch_db, 'insert $f isa scilit-sentence, has id "frag-1", has content "SIRT3 is required.", has offset 100, has length 18;')
+    w(scratch_db, 'insert $c isa scilit-claim, has id "claim-1", has name "SIRT3 necessity",'
+                  '  has scilit-claim-statement "SIRT3 is required for X", has scilit-claim-type "primary",'
+                  '  has scilit-rhetorical-role "own-claim";')
+    w(scratch_db, 'match $c isa scilit-claim, has id "claim-1"; $f isa scilit-sentence, has id "frag-1";'
+                  'insert (derivative: $c, derived-from-source: $f) isa alh-derivation;')
+    w(scratch_db, 'insert $o isa scilit-observation, has id "obs-1", has name "obs",'
+                  '  has scilit-knowledge-level "association", has scilit-bio-scale "cellular";')
+    w(scratch_db, 'match $c isa scilit-claim, has id "claim-1"; $o isa scilit-observation, has id "obs-1";'
+                  'insert (claim: $c, observation: $o) isa scilit-claim-observation;')
+    # claim -> anchored fragment offset
+    rows = r(scratch_db, 'match $c isa scilit-claim, has id "claim-1", has scilit-rhetorical-role $az;'
+                         ' (derivative: $c, derived-from-source: $f) isa alh-derivation;'
+                         ' $f has offset $off, has length $len; fetch {"az": $az, "off": $off, "len": $len};')
+    assert rows[0]["az"] == "own-claim" and rows[0]["off"] == 100 and rows[0]["len"] == 18
+    # claim -> observation provenance hop
+    obs = r(scratch_db, 'match (claim: $c, observation: $o) isa scilit-claim-observation; $o has id $oid; fetch {"oid": $oid};')
+    assert obs[0]["oid"] == "obs-1"
