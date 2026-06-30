@@ -520,7 +520,6 @@ entity kefed-model sub alh-artifact,
 entity scilit-paper-sensemaking sub alh-sensemaking-note;
 
 # OBSERVATION - a measurement-in-context; immutable, background-free (System 2, D node).
-# Tied to its KEfED design frame via kefed-observed-via (measurement = f(parameter|constant)).
 entity scilit-observation sub alh-sensemaking-note,
     owns scilit-knowledge-level,
     owns scilit-bio-scale,
@@ -805,10 +804,6 @@ relation ooevv-param-mapping,                  # how a data-transformation maps 
     relates in-parameter,
     relates out-parameter,
     owns ooevv-param-rule-kind;
-relation ooevv-set-process,                    # element-set groups its processes
-    relates container, relates contained-process;
-relation ooevv-set-entity,                     # element-set groups its entities
-    relates container, relates contained-entity;
 # --- entities ---
 
 # ELEMENT - base for everything an element-set contains (concrete parent, not abstract).
@@ -859,8 +854,7 @@ entity ooevv-process sub ooevv-element,                # obo:BFO_0000015
     plays ooevv-process-input:consuming-process,
     plays ooevv-process-output:producing-process,
     plays ooevv-parameter-binding:binding-bearer,
-    plays ooevv-produced-by:producing-process,
-    plays ooevv-set-process:contained-process;
+    plays ooevv-produced-by:producing-process;
 entity ooevv-assay sub ooevv-process;                  # obo:OBI_0000070
 entity ooevv-material-processing sub ooevv-process;    # obo:OBI_0000094
 entity ooevv-data-transformation sub ooevv-process,    # obo:OBI_0200000

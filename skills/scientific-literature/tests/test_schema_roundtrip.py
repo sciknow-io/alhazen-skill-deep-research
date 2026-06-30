@@ -207,10 +207,58 @@ def test_no_retired_types_remain():
         "entity kefed-slot ",
         "entity kefed-template ",
         "entity kefed-variable ",
-        "relation kefed-element",
+        "relation kefed-element,",
         "relation kefed-observed-via",
         "entity scilit-reported-claim",
         "entity scilit-reported-gap",
+        "relation ooevv-set-process",
+        "relation ooevv-set-entity",
     ]
     present = [p for p in retired_patterns if p in txt]
     assert not present, f"retired types still referenced as definitions: {present}"
+
+
+def test_kefed_model_element_membership(scratch_db):
+    """Round-trip: kefed-model-element links a kefed-model to an ooevv-material-entity."""
+    w(scratch_db, 'insert $m isa kefed-model, has id "kefedm-mem-1", has name "membrane-model";')
+    w(scratch_db,
+      'match $m isa kefed-model, has id "kefedm-mem-1";'
+      'insert $e isa ooevv-material-entity, has id "ooevv-me-mem", has name "SIRT3 protein";'
+      ' (model: $m, element: $e) isa kefed-model-element;')
+    rows = r(
+        scratch_db,
+        'match $m isa kefed-model, has id "kefedm-mem-1";'
+        ' (model: $m, element: $e) isa kefed-model-element; $e has name $n; fetch {"n": $n};',
+    )
+    assert rows, "Expected kefed-model-element membership row but got none"
+    assert rows[0]["n"] == "SIRT3 protein", f"Expected 'SIRT3 protein' but got {rows[0]['n']!r}"
+
+
+def test_datum_observation_bridge(scratch_db):
+    """Round-trip: ooevv-datum-observation is the sole bridge from a datum row to its observation."""
+    # create a template model + instance + datum
+    w(scratch_db, 'insert $m isa kefed-model, has id "kefedm-dob-1", has name "bridge-model",'
+                  '  has kefed-model-state "template";')
+    w(scratch_db,
+      'match $m isa kefed-model, has id "kefedm-dob-1";'
+      'insert $inst isa kefed-instance, has id "kefedi-dob-1", has name "bridge-run";'
+      ' (instance: $inst, model: $m) isa ooevv-instance-of;')
+    w(scratch_db,
+      'match $inst isa kefed-instance, has id "kefedi-dob-1";'
+      'insert $d isa ooevv-datum, has id "dat-dob-1";'
+      ' (instance: $inst, datum: $d) isa ooevv-instance-datum;')
+    # create an observation and link datum -> observation via ooevv-datum-observation
+    w(scratch_db,
+      'insert $o isa scilit-observation, has id "obs-dob-1", has name "bridge-obs",'
+      '  has scilit-knowledge-level "association", has scilit-bio-scale "molecular";')
+    w(scratch_db,
+      'match $d isa ooevv-datum, has id "dat-dob-1"; $o isa scilit-observation, has id "obs-dob-1";'
+      'insert (datum: $d, observation: $o) isa ooevv-datum-observation;')
+    # match it back asserting the observation id
+    rows = r(
+        scratch_db,
+        'match $d isa ooevv-datum, has id "dat-dob-1";'
+        ' (datum: $d, observation: $o) isa ooevv-datum-observation; $o has id $oid; fetch {"oid": $oid};',
+    )
+    assert rows, "Expected ooevv-datum-observation bridge row but got none"
+    assert rows[0]["oid"] == "obs-dob-1", f"Expected 'obs-dob-1' but got {rows[0]['oid']!r}"
