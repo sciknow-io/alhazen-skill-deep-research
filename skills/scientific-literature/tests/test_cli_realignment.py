@@ -1014,3 +1014,90 @@ def test_t8_load_investigation_iteration_phases(authoring_db, capsys):
     assert disc[0].get("iteration") == 1, (
         f"Expected iteration=1 on discovery phase, got {disc[0].get('iteration')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 9: Retired-type guard (pure-logic, no DB)
+# ---------------------------------------------------------------------------
+
+def test_no_retired_types_in_cli():
+    """Guard: no retired TypeQL type name survives in live code of kqed.py or
+    scientific_literature.py.
+
+    Stripping strategy:
+      1. Remove all triple-quoted string literals (docstrings and historic notes).
+      2. Remove full-line # comments.
+      3. Remove inline # comment tails.
+
+    What remains is live executable code (including single-quoted TypeQL f-strings).
+    TypeQL queries use single-quoted f-strings; docstrings use triple-double-quotes;
+    so stripping triple-quoted strings removes only documentation, not queries.
+
+    Retired names that must NOT appear (precise tokens so kefed-model-element
+    and ooevv-variable do NOT false-trip):
+      - kefed-variable   (not substring of kefed-model-element or ooevv-variable)
+      - kefed-element    (not substring of kefed-model-element)
+      - kefed-observed-via, kefed-slot, kefed-template, kefed-template-slot
+      - ooevv-param-slot, ooevv-slot-binding, ooevv-bundle-experiment
+      - ooevv-set-process, ooevv-set-entity
+      - scilit-reported-claim, scilit-reported-gap
+      - kefed-value-set, scilit-iteration-number, scilit-investigation-phasing
+    """
+    import re
+    from pathlib import Path
+
+    SKILL_DIR = Path(__file__).resolve().parent.parent
+
+    RETIRED = [
+        "kefed-variable",
+        "kefed-element",
+        "kefed-observed-via",
+        "kefed-slot",
+        "kefed-template",
+        "kefed-template-slot",
+        "ooevv-param-slot",
+        "ooevv-slot-binding",
+        "ooevv-bundle-experiment",
+        "ooevv-set-process",
+        "ooevv-set-entity",
+        "scilit-reported-claim",
+        "scilit-reported-gap",
+        "kefed-value-set",
+        "scilit-iteration-number",
+        "scilit-investigation-phasing",
+    ]
+
+    def live_text(path: Path) -> str:
+        """Return only live code text: triple-quoted strings removed, # comments stripped."""
+        source = path.read_text()
+        # 1. Remove triple-quoted string literals (docstrings, historic notes in """/''').
+        #    Uses lazy matching with DOTALL so each pair collapses to an empty string.
+        source = re.sub(r'""".*?"""', '', source, flags=re.DOTALL)
+        source = re.sub(r"'''.*?'''", '', source, flags=re.DOTALL)
+        # 2. Remove full-line # comments and inline # comment tails.
+        lines = []
+        for line in source.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith('#'):
+                continue
+            if '#' in line:
+                line = line[:line.index('#')]
+            lines.append(line)
+        return '\n'.join(lines)
+
+    files = [
+        ("kqed.py", SKILL_DIR / "kqed.py"),
+        ("scientific_literature.py", SKILL_DIR / "scientific_literature.py"),
+    ]
+
+    violations = []
+    for fname, fpath in files:
+        text = live_text(fpath)
+        for retired in RETIRED:
+            if retired in text:
+                violations.append(f"  {fname}: '{retired}'")
+
+    assert not violations, (
+        "Retired type names found in live CLI code (after stripping triple-quoted strings "
+        "and # comments):\n" + "\n".join(violations)
+    )

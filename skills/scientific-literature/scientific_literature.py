@@ -3421,7 +3421,8 @@ def cmd_ground_bundle(args):
             pol = list(tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{bid}"; '
                 f'(phase: $ph, sensemaking: $b) isa scilit-phase-sensemaking; '
-                f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
+                f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+                f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
                 f'(investigation: $inv, policy: $pp) isa scilit-investigation-grounding; '
                 f'fetch {{ "content": $pp.content }};').resolve())
             if not pol or not pol[0].get("content"):
