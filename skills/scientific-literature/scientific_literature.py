@@ -1979,26 +1979,51 @@ def _set_investigation_status(tx, inv_id, status):
 
 def _ensure_phase_note(tx, inv_id, phase, content=None, iteration=1):
     """Find-or-create the stage note for (investigation, phase, iteration).
+
+    New wiring: investigation -> scilit-iteration (by index) -> scilit-investigation-phase
+    via scilit-investigation-iteration and scilit-iteration-stage respectively.
+    The iteration is resolved-or-created by scilit-iteration-index.
+
     Returns (phase_id, created)."""
-    existing = list(tx.query(
+    # Step 1: resolve-or-create the scilit-iteration for this investigation + index
+    its = list(tx.query(
         f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
-        f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
-        f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(phase)}", '
-        f'has scilit-iteration-number {int(iteration)}; '
+        f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+        f'$it isa scilit-iteration, has scilit-iteration-index {int(iteration)}; '
+        f'fetch {{ "id": $it.id }};'
+    ).resolve())
+    if its:
+        it_id = its[0]["id"]
+    else:
+        it_id = generate_id("scit")
+        ts = get_timestamp()
+        tx.query(
+            f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+            f'insert $it isa scilit-iteration, has id "{it_id}", '
+            f'has name "Iteration {int(iteration)}", '
+            f'has scilit-iteration-index {int(iteration)}, has created-at {ts}; '
+            f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration;'
+        ).resolve()
+
+    # Step 2: find-or-create the stage note under this iteration
+    existing = list(tx.query(
+        f'match $it isa scilit-iteration, has id "{escape_string(it_id)}"; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+        f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(phase)}"; '
         f'fetch {{ "id": $ph.id }};'
     ).resolve())
     if existing:
         return existing[0]["id"], False
+
     ph_id = generate_id("scphase")
     ts = get_timestamp()
     content_clause = f', has content "{escape_string(content)}"' if content else ""
     tx.query(
-        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'match $it isa scilit-iteration, has id "{escape_string(it_id)}"; '
         f'insert $ph isa scilit-investigation-phase, has id "{ph_id}", '
         f'has name "{escape_string(phase.capitalize())} phase"{content_clause}, '
-        f'has scilit-phase "{escape_string(phase)}", has scilit-iteration-number {int(iteration)}, '
-        f'has created-at {ts}; '
-        f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing;'
+        f'has scilit-phase "{escape_string(phase)}", has created-at {ts}; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage;'
     ).resolve()
     return ph_id, True
 
@@ -2048,13 +2073,18 @@ def _ensure_investigation_collection(driver, inv_id, inv_name=None):
 
 def cmd_create_investigation(args):
     """Create a named investigation note. Typed `corpus` (about a scilit-corpus) or
-    `deep-dive` (about a single focal scilit-paper)."""
+    `deep-dive` (about a single focal scilit-paper).
+
+    Seeds iteration 1 (scilit-iteration index 1 + scilit-investigation-iteration link)
+    in the same transaction so every investigation starts with a first-class iteration.
+    """
     inv_type = getattr(args, "type", None) or "corpus"
     if inv_type not in ("corpus", "deep-dive"):
         print(json.dumps({"success": False,
                           "error": "Invalid --type. Use 'corpus' or 'deep-dive'"}))
         sys.exit(1)
     inv_id = generate_id("scinv")
+    it1_id = generate_id("scit")
     ts = get_timestamp()
     status = args.status or "scoping"
 
@@ -2078,7 +2108,11 @@ def cmd_create_investigation(args):
                     f'has scilit-investigation-status "{escape_string(status)}", '
                     f'has scilit-investigation-type "deep-dive", '
                     f'has created-at {ts}; '
-                    f'(investigation: $inv, focal-paper: $p) isa scilit-investigation-focus;'
+                    f'(investigation: $inv, focal-paper: $p) isa scilit-investigation-focus; '
+                    f'$it isa scilit-iteration, has id "{it1_id}", '
+                    f'has name "Iteration 1", '
+                    f'has scilit-iteration-index 1, has created-at {ts}; '
+                    f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration;'
                 ).resolve()
                 tx.commit()
             coll_id = _ensure_investigation_collection(driver, inv_id, args.name)
@@ -2116,7 +2150,11 @@ def cmd_create_investigation(args):
                 f'has scilit-investigation-status "{escape_string(status)}", '
                 f'has scilit-investigation-type "corpus", '
                 f'has created-at {ts}; '
-                f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope;'
+                f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope; '
+                f'$it isa scilit-iteration, has id "{it1_id}", '
+                f'has name "Iteration 1", '
+                f'has scilit-iteration-index 1, has created-at {ts}; '
+                f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration;'
             ).resolve()
             tx.commit()
     print(json.dumps({
@@ -2984,7 +3022,12 @@ def cmd_export_investigation(args):
 
 
 def cmd_record_phase(args):
-    """Upsert a phase note (one per investigation+phase); optionally advance status."""
+    """Upsert a phase note (one per investigation+phase+iteration); optionally advance status.
+
+    Uses the iteration path: resolve-or-create scilit-iteration (by index) under the
+    investigation, then resolve-or-create the scilit-investigation-phase under that iteration
+    via scilit-iteration-stage. Content is set during creation or updated on upsert.
+    """
     if args.phase not in INVESTIGATION_PHASES:
         print(json.dumps({"success": False,
                           "error": f"Invalid phase. Use one of: {', '.join(INVESTIGATION_PHASES)}"}))
@@ -3000,16 +3043,15 @@ def cmd_record_phase(args):
                 sys.exit(1)
 
             iteration = int(getattr(args, "iteration", 1) or 1)
-            existing = list(tx.query(
-                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
-                f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
-                f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(args.phase)}", '
-                f'has scilit-iteration-number {iteration}; '
-                f'fetch {{ "id": $ph.id }};'
-            ).resolve())
+            # _ensure_phase_note handles resolve-or-create for both the iteration and the phase.
+            # Pass content so it is set atomically during creation.
+            ph_id, created = _ensure_phase_note(
+                tx, args.investigation, args.phase, args.content, iteration
+            )
+            action = "created" if created else "updated"
 
-            if existing:
-                ph_id = existing[0]["id"]
+            if not created:
+                # Phase already existed — update its content (delete old value, insert new).
                 has_content = list(tx.query(
                     f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}", '
                     f'has content $c; fetch {{ "c": $c }};'
@@ -3023,10 +3065,6 @@ def cmd_record_phase(args):
                     f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}"; '
                     f'insert $ph has content "{escape_string(args.content)}";'
                 ).resolve()
-                action = "updated"
-            else:
-                ph_id, _ = _ensure_phase_note(tx, args.investigation, args.phase, args.content, iteration)
-                action = "created"
 
             if args.status:
                 _set_investigation_status(tx, args.investigation, args.status)

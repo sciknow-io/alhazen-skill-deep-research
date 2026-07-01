@@ -480,3 +480,113 @@ def test_t4_slot_commands_deleted():
         "cmd_param_slot must be deleted"
     assert not hasattr(sl, 'cmd_bind_slot'), \
         "cmd_bind_slot must be deleted"
+
+
+# ---------------------------------------------------------------------------
+# Task 6 tests: iteration-aware investigation/phase authoring
+#   cmd_create_investigation -> seeds scilit-iteration index 1 via scilit-investigation-iteration
+#   cmd_record_phase -> resolve-or-create scilit-iteration, link stage via scilit-iteration-stage
+#   NO scilit-investigation-phasing or scilit-iteration-number in the code paths
+# ---------------------------------------------------------------------------
+
+def test_t6_create_investigation_seeds_iteration1(authoring_db, capsys):
+    """cmd_create_investigation must seed a scilit-iteration with index 1 linked via
+    scilit-investigation-iteration so every investigation starts with iteration 1."""
+    import scientific_literature as sl
+
+    # prerequisite: a corpus to hang the investigation on
+    w(authoring_db,
+      'insert $c isa scilit-corpus, has id "sclit-corpus-t6", has name "T6 test corpus";')
+
+    args = types.SimpleNamespace(
+        type="corpus",
+        collection="sclit-corpus-t6",
+        name="T6 iteration seed test",
+        purpose="Verify iteration 1 is seeded on creation.",
+        status=None,
+    )
+    sl.cmd_create_investigation(args)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["success"] is True, f"cmd_create_investigation failed: {result}"
+    inv_id = result["id"]
+
+    # scilit-iteration with index 1 must be linked to the investigation
+    rows = r(authoring_db,
+             f'match $inv isa scilit-investigation, has id "{inv_id}"; '
+             f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+             f'$it isa scilit-iteration, has scilit-iteration-index $idx; '
+             f'fetch {{"idx": $idx}};')
+    assert rows, f"No scilit-iteration linked to investigation {inv_id!r} via scilit-investigation-iteration"
+    assert rows[0]["idx"] == 1, f"Expected iteration index 1, got {rows[0]['idx']}"
+
+
+def test_t6_record_phase_via_iteration_path(authoring_db, capsys):
+    """cmd_record_phase must create/find a scilit-iteration (by index) and link the
+    scilit-investigation-phase via scilit-iteration-stage (NOT scilit-investigation-phasing)."""
+    import scientific_literature as sl
+
+    # setup: corpus + investigation (iteration 1 seeded by cmd_create_investigation)
+    w(authoring_db,
+      'insert $c isa scilit-corpus, has id "sclit-corpus-t6b", has name "T6b corpus";')
+
+    args_inv = types.SimpleNamespace(
+        type="corpus",
+        collection="sclit-corpus-t6b",
+        name="T6b phase authoring test",
+        purpose="Verify phase is wired via iteration.",
+        status=None,
+    )
+    sl.cmd_create_investigation(args_inv)
+    captured = capsys.readouterr()
+    inv_id = json.loads(captured.out)["id"]
+
+    # call cmd_record_phase with --iteration 1 --phase discovery
+    args_phase = types.SimpleNamespace(
+        investigation=inv_id,
+        phase="discovery",
+        iteration=1,
+        content="Initial discovery findings for iteration 1.",
+        status=None,
+    )
+    sl.cmd_record_phase(args_phase)
+    captured = capsys.readouterr()
+    phase_result = json.loads(captured.out)
+    assert phase_result["success"] is True, f"cmd_record_phase failed: {phase_result}"
+    ph_id = phase_result["phase_note_id"]
+
+    # assert: investigation -> scilit-iteration(index 1) -> scilit-iteration-stage -> phase("discovery")
+    rows = r(authoring_db,
+             f'match $inv isa scilit-investigation, has id "{inv_id}"; '
+             f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+             f'$it isa scilit-iteration, has scilit-iteration-index $idx; '
+             f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+             f'$ph isa scilit-investigation-phase, has scilit-phase $stage; '
+             f'fetch {{"idx": $idx, "stage": $stage, "ph_id": $ph.id}};')
+    assert rows, "investigation -> scilit-iteration -> scilit-iteration-stage -> phase chain not found"
+    assert rows[0]["idx"] == 1
+    assert rows[0]["stage"] == "discovery"
+    assert rows[0]["ph_id"] == ph_id
+
+    # assert: upsert (call again with different content, same phase)
+    args_phase2 = types.SimpleNamespace(
+        investigation=inv_id,
+        phase="discovery",
+        iteration=1,
+        content="Updated discovery findings.",
+        status=None,
+    )
+    sl.cmd_record_phase(args_phase2)
+    captured = capsys.readouterr()
+    phase_result2 = json.loads(captured.out)
+    assert phase_result2["success"] is True
+    assert phase_result2["phase_note_id"] == ph_id, "Upsert must return same phase note id"
+    assert phase_result2["action"] == "updated", f"Expected 'updated', got {phase_result2['action']!r}"
+
+    # assert updated content is stored
+    content_rows = r(authoring_db,
+                     f'match $ph isa scilit-investigation-phase, has id "{ph_id}", '
+                     f'has content $c; fetch {{"c": $c}};')
+    assert content_rows, "No content found after upsert"
+    assert "Updated" in content_rows[0]["c"], f"Content not updated: {content_rows[0]['c']!r}"
