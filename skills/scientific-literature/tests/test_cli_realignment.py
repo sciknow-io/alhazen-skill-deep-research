@@ -590,3 +590,121 @@ def test_t6_record_phase_via_iteration_path(authoring_db, capsys):
                      f'has content $c; fetch {{"c": $c}};')
     assert content_rows, "No content found after upsert"
     assert "Updated" in content_rows[0]["c"], f"Content not updated: {content_rows[0]['c']!r}"
+
+
+# ---------------------------------------------------------------------------
+# Task 5 tests: observation/bundle authoring rework
+#   cmd_add_observation -> scilit-observation threaded via scilit-sensemaking-observation;
+#                          NO kefed-observed-via / kefed-model / kefed-variable created here
+#   cmd_create_bundle   -> bundle threaded under sensemaking stage of iteration 1
+# ---------------------------------------------------------------------------
+
+def test_t5_cmd_add_observation_simple(authoring_db, capsys):
+    """cmd_add_observation must insert a scilit-observation (with knowledge-level + bio-scale)
+    threaded under the bundle via scilit-sensemaking-observation, and must NOT create any
+    kefed-model linked via the retired kefed-observed-via relation."""
+    import scientific_literature as sl
+
+    w(authoring_db,
+      'insert $b isa scilit-paper-sensemaking, has id "scsm-t5-obs", has name "T5 obs bundle";')
+
+    # Pass experiment_type and variables — the OLD code would try to insert retired
+    # kefed-variable/kefed-element types, which fail.  The NEW handler must ignore these
+    # args and just insert the observation note.
+    args = types.SimpleNamespace(
+        bundle="scsm-t5-obs",
+        statement="SIRT3 deacetylase activity declines with HSC aging.",
+        name=None,
+        knowledge_level="association",
+        bio_scale="cellular",
+        experiment_type="western blot",
+        variables=json.dumps([{"name": "SIRT3 signal", "role": "measurement"}]),
+    )
+    sl.cmd_add_observation(args)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["success"] is True, f"cmd_add_observation failed: {result}"
+    obs_id = result["observation_id"]
+
+    # scilit-observation must exist, threaded under the bundle
+    rows = r(authoring_db,
+             f'match $b isa scilit-paper-sensemaking, has id "scsm-t5-obs"; '
+             f'$o isa scilit-observation, has id "{obs_id}"; '
+             f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation; '
+             f'fetch {{"id": $o.id}};')
+    assert rows, f"scilit-observation {obs_id!r} not threaded via scilit-sensemaking-observation"
+    assert rows[0]["id"] == obs_id
+
+    # observation must carry knowledge-level and bio-scale
+    attr_rows = r(authoring_db,
+                  f'match $o isa scilit-observation, has id "{obs_id}", '
+                  f'has scilit-knowledge-level $kl, has scilit-bio-scale $bs; '
+                  f'fetch {{"kl": $kl, "bs": $bs}};')
+    assert attr_rows, "scilit-knowledge-level / scilit-bio-scale missing on observation"
+    assert attr_rows[0]["kl"] == "association"
+    assert attr_rows[0]["bs"] == "cellular"
+
+    # NO kefed-model must be linked via the retired kefed-observed-via
+    # (that relation is gone from schema; verify no kefed-model was created at all in this tx)
+    model_rows = r(authoring_db,
+                   f'match $o isa scilit-observation, has id "{obs_id}"; '
+                   f'$m isa kefed-model; '
+                   f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment; '
+                   f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation; '
+                   f'fetch {{"mid": $m.id}};')
+    assert not model_rows, (
+        "cmd_add_observation must NOT create a kefed-model under the bundle — "
+        "KEfED frame is authored separately via cmd_add_experiment"
+    )
+
+
+def test_t5_cmd_create_bundle_iteration_wiring(authoring_db, capsys):
+    """cmd_create_bundle must thread the bundle under the sensemaking stage of iteration 1
+    via: investigation -> scilit-iteration(idx=1) -> scilit-iteration-stage ->
+         scilit-investigation-phase(sensemaking) -> scilit-phase-sensemaking -> bundle."""
+    import scientific_literature as sl
+
+    # prerequisites: corpus, investigation (seeds iteration 1), paper
+    w(authoring_db,
+      'insert $c isa scilit-corpus, has id "sclit-corpus-t5b", has name "T5b corpus";')
+    args_inv = types.SimpleNamespace(
+        type="corpus",
+        collection="sclit-corpus-t5b",
+        name="T5b bundle wiring test",
+        purpose="Verify bundle wired under sensemaking of iteration 1.",
+        status=None,
+    )
+    sl.cmd_create_investigation(args_inv)
+    captured = capsys.readouterr()
+    inv_id = json.loads(captured.out)["id"]
+
+    w(authoring_db,
+      'insert $p isa scilit-paper, has id "scilit-paper-t5b-001", has name "Test paper T5b";')
+
+    args_bundle = types.SimpleNamespace(
+        investigation=inv_id,
+        paper="scilit-paper-t5b-001",
+        name="T5b sensemaking bundle",
+        iteration=1,
+    )
+    sl.cmd_create_bundle(args_bundle)
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["success"] is True, f"cmd_create_bundle failed: {result}"
+    bundle_id = result["bundle_id"]
+
+    # bundle must be reachable via the full iteration chain at sensemaking phase
+    rows = r(authoring_db,
+             f'match $inv isa scilit-investigation, has id "{inv_id}"; '
+             f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+             f'$it isa scilit-iteration, has scilit-iteration-index $idx; '
+             f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+             f'$ph isa scilit-investigation-phase, has scilit-phase $stage; '
+             f'(phase: $ph, sensemaking: $b) isa scilit-phase-sensemaking; '
+             f'$b isa scilit-paper-sensemaking, has id "{bundle_id}"; '
+             f'fetch {{"idx": $idx, "stage": $stage, "bid": $b.id}};')
+    assert rows, "bundle not reachable via investigation -> iteration -> stage -> phase -> bundle"
+    assert rows[0]["idx"] == 1, f"Expected iteration index 1, got {rows[0]['idx']}"
+    assert rows[0]["stage"] == "sensemaking", f"Expected phase 'sensemaking', got {rows[0]['stage']!r}"
+    assert rows[0]["bid"] == bundle_id

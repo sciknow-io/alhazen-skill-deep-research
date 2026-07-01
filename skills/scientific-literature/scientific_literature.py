@@ -3341,21 +3341,19 @@ def cmd_create_bundle(args):
 
 
 def cmd_add_observation(args):
-    """Add a scilit-observation (measurement-in-context) to a sensemaking bundle. With
-    --experiment-type (+ optional --variables JSON), also builds its KEfED design frame:
-    a kefed-model named by the experiment type, with typed kefed-variables
-    (parameter|constant|measurement), linked via kefed-observed-via."""
+    """Add a scilit-observation (measurement-in-context) to a sensemaking bundle.
+
+    Inserts a scilit-observation (knowledge-level, bio-scale) threaded under the
+    scilit-paper-sensemaking bundle via scilit-sensemaking-observation.
+
+    The KEfED experiment frame (kefed-model + ooevv-variable bigraph) is authored
+    SEPARATELY via cmd_add_experiment / cmd_add_variable; this handler no longer
+    builds it. The --experiment-type and --variables flags are accepted but ignored
+    so that existing call sites do not error on unrecognised arguments.
+    """
     obs_id = generate_id("scobs")
     ts = get_timestamp()
     name = (args.name or args.statement)[:60]
-    variables = []
-    if getattr(args, "variables", None):
-        try:
-            variables = json.loads(args.variables)
-        except Exception:
-            print(json.dumps({"success": False, "error": "--variables must be JSON list of {name,role,values?,efo?}"}))
-            sys.exit(1)
-    model_id = None
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             b = list(tx.query(
@@ -3372,32 +3370,8 @@ def cmd_add_observation(args):
                 f'has scilit-bio-scale "{escape_string(args.bio_scale)}", has created-at {ts}; '
                 f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation;'
             ).resolve()
-            if getattr(args, "experiment_type", None):
-                model_id = generate_id("sckm")
-                tx.query(
-                    f'match $o isa scilit-observation, has id "{obs_id}"; '
-                    f'insert $m isa kefed-model, has id "{model_id}", '
-                    f'has name "{escape_string(args.experiment_type)}", has created-at {ts}; '
-                    f'(observation: $o, model: $m) isa kefed-observed-via;'
-                ).resolve()
-                for v in variables:
-                    vid = generate_id("scvar")
-                    opt = ""
-                    if v.get("values"):
-                        opt += f', has kefed-value-set "{escape_string(str(v["values"]))}"'
-                    if v.get("efo"):
-                        opt += f', has kefed-efo-label "{escape_string(str(v["efo"]))}"'
-                    tx.query(
-                        f'match $m isa kefed-model, has id "{model_id}"; '
-                        f'insert $v isa kefed-variable, has id "{vid}", '
-                        f'has name "{escape_string(str(v.get("name", "var")))}", '
-                        f'has kefed-variable-role "{escape_string(str(v.get("role", "measurement")))}"{opt}, '
-                        f'has created-at {ts}; '
-                        f'(model: $m, variable: $v) isa kefed-element;'
-                    ).resolve()
             tx.commit()
-    print(json.dumps({"success": True, "observation_id": obs_id, "bundle": args.bundle,
-                      "kefed_model": model_id, "variables": len(variables)}, indent=2))
+    print(json.dumps({"success": True, "observation_id": obs_id, "bundle": args.bundle}, indent=2))
 
 
 def cmd_add_mechanism(args):
@@ -3477,16 +3451,19 @@ def cmd_ground_bundle(args):
             gfilter_v = "" if reground else "not { $v has scilit-grounding-state $g; }"
             gfilter_e = "" if reground else "not { $e has scilit-grounding-state $g; }"
             # collect targets: (typelabel, id, name)
+            # Variables: bundle -> scilit-sensemaking-experiment -> kefed-model
+            #            -> kefed-model-element -> ooevv-variable
             targets = {}
             var_rows = list(tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{bid}"; '
-                f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation; '
-                f'(observation: $o, model: $m) isa kefed-observed-via; '
-                f'(model: $m, variable: $v) isa kefed-element; $v has name $nm; '
+                f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment; '
+                f'$m isa kefed-model; '
+                f'(model: $m, element: $v) isa kefed-model-element; '
+                f'$v isa ooevv-variable, has name $nm; '
                 f'{gfilter_v} '
                 f'fetch {{ "id": $v.id, "name": $nm }};').resolve())
             for r in var_rows:
-                targets[r["id"]] = ("kefed-variable", r["name"])
+                targets[r["id"]] = ("ooevv-variable", r["name"])
             for role in ("mech-source", "mech-target"):
                 ent_rows = list(tx.query(
                     f'match $b isa scilit-paper-sensemaking, has id "{bid}"; '
