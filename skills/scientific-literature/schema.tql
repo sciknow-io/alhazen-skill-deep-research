@@ -788,24 +788,26 @@ relation ooevv-set-element,                    # an element-set groups its eleme
     relates element-set, relates element;
 
 # --- KEfED bigraph relations ---
-relation kefed-model-element,                  # a model groups the elements that form its bigraph
+relation kefed-model-element,                  # a model groups the nodes that form its bigraph
     relates model, relates element;
 relation ooevv-subject,                        # the model's SOURCE node (experimental subject)
-    relates model, relates subject-entity;
+    relates model, relates subject-node;
+
+# --- node-graph relations (kefed-model-node graph layer) ---
+relation kefed-node-type,                      # a node is typed by an OOEVV definition
+    relates node, relates node-type;
+relation kefed-node-variable,                  # a node carries an OOEVV variable (measurement or parameter)
+    relates node, relates variable;
 
 # --- relations (protocol graph) ---
 relation ooevv-process-decomposition,          # a process decomposes into sub-processes (arbitrary depth)
     relates parent-process, relates sub-process;
-relation ooevv-process-input,                  # material flow: entity consumed by a process
-    relates input-entity, relates consuming-process;
-relation ooevv-process-output,                 # material flow: entity produced by a process
-    relates producing-process, relates output-entity;
-relation ooevv-parameter-binding,              # parameter set ON a process OR entity (KEfED dependency; dual bearer)
-    relates binding-bearer, relates bound-parameter;
+relation ooevv-process-input,                  # material flow: input node consumed by a consuming node
+    relates input-node, relates consuming-node;
+relation ooevv-process-output,                 # material flow: producing node outputs to output node
+    relates producing-node, relates output-node;
 relation ooevv-parameter-target,               # a parameter's value targets a curated entity (specificity)
     relates targeting-parameter, relates target-entity;
-relation ooevv-produced-by,                    # a measurement/derived variable is produced by a process
-    relates produced-variable, relates producing-process;
 relation ooevv-param-mapping,                  # how a data-transformation maps input params to output params
     relates transformation,
     relates in-parameter,
@@ -824,12 +826,10 @@ entity ooevv-element-set sub alh-artifact,
     plays ooevv-set-element:element-set;
 
 # ENTITY split: material entity (obo:BFO_0000040) vs ICE (obo:IAO_0000030).
+# ooevv-material-entity is now pure OOEVV vocabulary: it no longer plays bigraph roles directly.
+# kefed-model-node nodes typed by ooevv-material-entity carry the bigraph roles.
 entity ooevv-material-entity sub ooevv-element,        # obo:BFO_0000040
-    plays kefed-model-element:element,
-    plays ooevv-subject:subject-entity,
-    plays ooevv-process-input:input-entity,
-    plays ooevv-process-output:output-entity,
-    plays ooevv-parameter-binding:binding-bearer,
+    plays kefed-node-type:node-type,
     plays ooevv-parameter-target:target-entity;
 
 # QUALITY - curated generic measurand (concentration, signal-intensity, viability...). Reusable vocab.
@@ -838,30 +838,29 @@ entity ooevv-quality sub ooevv-element,
     plays ooevv-measures:quality;
 
 # VARIABLE - an ICE that takes values (obo:IAO_0000030); grounds to EFO via kefed-efo-label.
+# ooevv-variable is now pure OOEVV vocabulary: it no longer plays bigraph roles directly.
+# kefed-model-node nodes carry variables via kefed-node-variable:variable.
 entity ooevv-variable sub ooevv-element,               # obo:IAO_0000030
     owns ooevv-variable-role,
     owns ooevv-ice-kind,
     owns kefed-efo-label,
     owns scilit-grounding-label, owns scilit-grounding-state, owns scilit-grounding-confidence,
-    plays kefed-model-element:element,
+    plays kefed-node-variable:variable,
     plays ooevv-measures:measured-variable,
     plays ooevv-has-scale:scaled-variable,
     plays ooevv-scale-parts:part-variable,
-    plays ooevv-parameter-binding:bound-parameter,
     plays ooevv-parameter-target:targeting-parameter,
-    plays ooevv-produced-by:produced-variable,
     plays ooevv-param-mapping:in-parameter,
     plays ooevv-param-mapping:out-parameter;
 
-# PROCESS - a protocol step (obo:BFO_0000015); hierarchical, consumes/produces entities, binds parameters.
+# PROCESS - a protocol step (obo:BFO_0000015); hierarchical. Pure OOEVV vocabulary: bigraph roles
+# are carried by kefed-model-node nodes typed by this process definition. Process decomposition
+# (sub-step hierarchy within a vocabulary definition) is unchanged.
 entity ooevv-process sub ooevv-element,                # obo:BFO_0000015
-    plays kefed-model-element:element,
+    plays kefed-node-type:node-type,
     plays ooevv-process-decomposition:parent-process,
-    plays ooevv-process-decomposition:sub-process,
-    plays ooevv-process-input:consuming-process,
-    plays ooevv-process-output:producing-process,
-    plays ooevv-parameter-binding:binding-bearer,
-    plays ooevv-produced-by:producing-process;
+    plays ooevv-process-decomposition:sub-process;
+# Subtypes inherit kefed-node-type:node-type from ooevv-process (SVL42 -- do NOT redeclare).
 entity ooevv-assay sub ooevv-process;                  # obo:OBI_0000070
 entity ooevv-material-processing sub ooevv-process;    # obo:OBI_0000094
 entity ooevv-data-transformation sub ooevv-process,    # obo:OBI_0200000
@@ -878,6 +877,21 @@ entity ooevv-numeric-scale sub ooevv-scale, owns ooevv-min, owns ooevv-max;
 entity ooevv-file-scale sub ooevv-scale;
 entity ooevv-composite-scale sub ooevv-scale,
     plays ooevv-scale-parts:composite-scale;
+
+
+# KEFED-MODEL-NODE - a node in a kefed-model graph. Typed by an OOEVV definition
+# (via kefed-node-type); carries its variables (via kefed-node-variable); plays all
+# bigraph structural roles (subject, input/output flow, model membership).
+entity kefed-model-node sub alh-domain-thing,
+    plays kefed-model-element:element,
+    plays ooevv-subject:subject-node,
+    plays ooevv-process-input:input-node,
+    plays ooevv-process-input:consuming-node,
+    plays ooevv-process-output:producing-node,
+    plays ooevv-process-output:output-node,
+    plays kefed-node-type:node,
+    plays kefed-node-variable:node,
+    plays ooevv-parameter-target:target-entity;
 
 
 # =============================================================================

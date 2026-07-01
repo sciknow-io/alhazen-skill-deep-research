@@ -76,47 +76,67 @@ def _seed_elementset(db):
 
 def test_kefed_bigraph(scratch_db):
     _seed_elementset(scratch_db)
-    # model + subject material entity + a manipulation process + a measurement variable
+    # model + OOEVV definitions in element-set
     w(scratch_db, 'insert $m isa kefed-model, has id "kefedm-1", has name "qPCR run",'
                   '  has content "protocol", has format "kefed-bigraph";')
-    w(scratch_db, 'match $m isa kefed-model, has id "kefedm-1";'
-                  'insert $subj isa ooevv-material-entity, has id "me-subj", has name "mouse";'
-                  ' (model: $m, subject-entity: $subj) isa ooevv-subject;')
-    w(scratch_db, 'match $subj isa ooevv-material-entity, has id "me-subj";'
-                  'insert $p isa ooevv-material-processing, has id "mp-1", has name "knockout";'
-                  ' (input-entity: $subj, consuming-process: $p) isa ooevv-process-input;')
-    # a treatment parameter bound at the manipulation process AND a genotype param on the entity
-    w(scratch_db, 'match $p isa ooevv-material-processing, has id "mp-1";'
+    w(scratch_db, 'match $s isa ooevv-element-set, has id "ooevv-es-x";'
+                  'insert $me isa ooevv-material-entity, has id "me-subj", has name "mouse";'
+                  ' (element-set: $s, element: $me) isa ooevv-set-element;')
+    w(scratch_db, 'match $s isa ooevv-element-set, has id "ooevv-es-x";'
+                  'insert $mp isa ooevv-material-processing, has id "mp-1", has name "knockout";'
+                  ' (element-set: $s, element: $mp) isa ooevv-set-element;')
+    # Create model nodes typed by the OOEVV defs; add to model
+    w(scratch_db, 'match $m isa kefed-model, has id "kefedm-1"; $me isa ooevv-material-entity, has id "me-subj";'
+                  'insert $nsubj isa kefed-model-node, has id "knode-subj", has name "mouse-node";'
+                  ' (node: $nsubj, node-type: $me) isa kefed-node-type;'
+                  ' (model: $m, element: $nsubj) isa kefed-model-element;')
+    w(scratch_db, 'match $m isa kefed-model, has id "kefedm-1"; $mp isa ooevv-material-processing, has id "mp-1";'
+                  'insert $nproc isa kefed-model-node, has id "knode-mp1", has name "knockout-node";'
+                  ' (node: $nproc, node-type: $mp) isa kefed-node-type;'
+                  ' (model: $m, element: $nproc) isa kefed-model-element;')
+    # subject node via ooevv-subject (renamed role: subject-node)
+    w(scratch_db, 'match $m isa kefed-model, has id "kefedm-1"; $nsubj isa kefed-model-node, has id "knode-subj";'
+                  'insert (model: $m, subject-node: $nsubj) isa ooevv-subject;')
+    # material flow: subject node feeds into knockout node (renamed roles: input-node, consuming-node)
+    w(scratch_db, 'match $nsubj isa kefed-model-node, has id "knode-subj";'
+                  ' $nproc isa kefed-model-node, has id "knode-mp1";'
+                  'insert (input-node: $nsubj, consuming-node: $nproc) isa ooevv-process-input;')
+    # treatment parameter on knockout node + genotype parameter on subject node (kefed-node-variable)
+    w(scratch_db, 'match $nproc isa kefed-model-node, has id "knode-mp1";'
                   'insert $par isa ooevv-variable, has id "var-treat", has name "treatment",'
                   '  has ooevv-variable-role "parameter";'
-                  ' (binding-bearer: $p, bound-parameter: $par) isa ooevv-parameter-binding;')
-    w(scratch_db, 'match $subj isa ooevv-material-entity, has id "me-subj";'
+                  ' (node: $nproc, variable: $par) isa kefed-node-variable;')
+    w(scratch_db, 'match $nsubj isa kefed-model-node, has id "knode-subj";'
                   'insert $g isa ooevv-variable, has id "var-geno", has name "genotype",'
                   '  has ooevv-variable-role "parameter";'
-                  ' (binding-bearer: $subj, bound-parameter: $g) isa ooevv-parameter-binding;')
-    # subject reads back
+                  ' (node: $nsubj, variable: $g) isa kefed-node-variable;')
+    # subject node reads back via ooevv-subject (new role name: subject-node)
     sj = r(scratch_db, 'match $m isa kefed-model, has id "kefedm-1";'
-                       ' (model: $m, subject-entity: $e) isa ooevv-subject; $e has name $n; fetch {"n": $n};')
-    assert sj[0]["n"] == "mouse"
-    # BOTH a process and an entity bear a parameter
-    bearers = r(scratch_db, 'match (binding-bearer: $b, bound-parameter: $par) isa ooevv-parameter-binding;'
+                       ' (model: $m, subject-node: $n) isa ooevv-subject; $n has name $nn; fetch {"nn": $nn};')
+    assert sj[0]["nn"] == "mouse-node"
+    # BOTH nodes carry a parameter variable via kefed-node-variable
+    bearers = r(scratch_db, 'match (node: $n, variable: $par) isa kefed-node-variable;'
                             ' $par has name $pn; fetch {"pn": $pn};')
     assert sorted(x["pn"] for x in bearers) == ["genotype", "treatment"]
 
 
 def test_param_mapping_rules(scratch_db):
-    # --- Task-3 coverage gap: prove ooevv-assay inherits ooevv-produced-by roles ---
+    # --- Coverage: prove ooevv-assay inherits kefed-node-type:node-type from ooevv-process ---
+    # An assay definition can type a kefed-model-node, which then carries variables via kefed-node-variable.
     w(scratch_db, 'insert $a isa ooevv-assay, has id "assay-gap-cover", has name "gap-assay";')
     w(scratch_db, 'insert $v isa ooevv-variable, has id "var-gap-meas", has name "gap-measurement",'
                   '  has ooevv-variable-role "measurement";')
     w(scratch_db, 'match $a isa ooevv-assay, has id "assay-gap-cover";'
+                  'insert $n isa kefed-model-node, has id "knode-gap-cover", has name "assay-node";'
+                  ' (node: $n, node-type: $a) isa kefed-node-type;')
+    w(scratch_db, 'match $n isa kefed-model-node, has id "knode-gap-cover";'
                   ' $v isa ooevv-variable, has id "var-gap-meas";'
-                  ' insert (produced-variable: $v, producing-process: $a) isa ooevv-produced-by;')
-    gap_rows = r(scratch_db, 'match $a isa ooevv-assay, has id "assay-gap-cover";'
-                             ' (produced-variable: $v, producing-process: $a) isa ooevv-produced-by;'
-                             ' $v has name $n; fetch {"n": $n};')
-    assert gap_rows and gap_rows[0]["n"] == "gap-measurement", \
-        f"ooevv-assay bigraph role inheritance failed: {gap_rows!r}"
+                  'insert (node: $n, variable: $v) isa kefed-node-variable;')
+    gap_rows = r(scratch_db, 'match $n isa kefed-model-node, has id "knode-gap-cover";'
+                             ' (node: $n, variable: $v) isa kefed-node-variable;'
+                             ' $v has name $nm; fetch {"nm": $nm};')
+    assert gap_rows and gap_rows[0]["nm"] == "gap-measurement", \
+        f"ooevv-assay kefed-node-type inheritance via node-variable failed: {gap_rows!r}"
 
     # --- Main test: data-transformation parameter-mapping rules ---
     w(scratch_db, 'insert $t isa ooevv-data-transformation, has id "dt-mean", has name "mean over replicates";')
@@ -213,25 +233,127 @@ def test_no_retired_types_remain():
         "entity scilit-reported-gap",
         "relation ooevv-set-process",
         "relation ooevv-set-entity",
+        # Retired in kefed-model-node graph redesign (2b.1):
+        "relation ooevv-parameter-binding,",
+        "relation ooevv-produced-by,",
     ]
     present = [p for p in retired_patterns if p in txt]
     assert not present, f"retired types still referenced as definitions: {present}"
 
 
 def test_kefed_model_element_membership(scratch_db):
-    """Round-trip: kefed-model-element links a kefed-model to an ooevv-material-entity."""
+    """Round-trip: kefed-model-element links a kefed-model to a kefed-model-node (not OOEVV def directly)."""
     w(scratch_db, 'insert $m isa kefed-model, has id "kefedm-mem-1", has name "membrane-model";')
+    w(scratch_db, 'insert $me isa ooevv-material-entity, has id "ooevv-me-mem", has name "SIRT3 protein";')
     w(scratch_db,
-      'match $m isa kefed-model, has id "kefedm-mem-1";'
-      'insert $e isa ooevv-material-entity, has id "ooevv-me-mem", has name "SIRT3 protein";'
-      ' (model: $m, element: $e) isa kefed-model-element;')
+      'match $m isa kefed-model, has id "kefedm-mem-1"; $me isa ooevv-material-entity, has id "ooevv-me-mem";'
+      'insert $n isa kefed-model-node, has id "knode-mem-1", has name "SIRT3 node";'
+      ' (node: $n, node-type: $me) isa kefed-node-type;'
+      ' (model: $m, element: $n) isa kefed-model-element;')
     rows = r(
         scratch_db,
         'match $m isa kefed-model, has id "kefedm-mem-1";'
-        ' (model: $m, element: $e) isa kefed-model-element; $e has name $n; fetch {"n": $n};',
+        ' (model: $m, element: $n) isa kefed-model-element; $n has name $nn; fetch {"nn": $nn};',
     )
     assert rows, "Expected kefed-model-element membership row but got none"
-    assert rows[0]["n"] == "SIRT3 protein", f"Expected 'SIRT3 protein' but got {rows[0]['n']!r}"
+    assert rows[0]["nn"] == "SIRT3 node", f"Expected 'SIRT3 node' but got {rows[0]['nn']!r}"
+
+
+def test_kefed_model_node_graph(scratch_db):
+    """Round-trip: kefed-model-node graph with node-type, node-variable, and process-input edge."""
+    # 1. Create a kefed-model
+    w(scratch_db, 'insert $m isa kefed-model, has id "kefedm-ng-1", has name "node-graph-model";')
+
+    # 2. Create element-set with an ooevv-material-entity def and an ooevv-assay def
+    w(scratch_db, 'insert $s isa ooevv-element-set, has id "ooevv-es-ng", has name "NodeGraph";')
+    w(scratch_db,
+      'match $s isa ooevv-element-set, has id "ooevv-es-ng";'
+      'insert $me isa ooevv-material-entity, has id "ooevv-me-ng", has name "cell line";'
+      ' (element-set: $s, element: $me) isa ooevv-set-element;')
+    w(scratch_db,
+      'match $s isa ooevv-element-set, has id "ooevv-es-ng";'
+      'insert $assay isa ooevv-assay, has id "ooevv-assay-ng", has name "western blot";'
+      ' (element-set: $s, element: $assay) isa ooevv-set-element;')
+
+    # 3. Create kefed-model-node for the material-entity def; add to model; set as subject
+    w(scratch_db,
+      'match $me isa ooevv-material-entity, has id "ooevv-me-ng";'
+      ' $m isa kefed-model, has id "kefedm-ng-1";'
+      'insert $n1 isa kefed-model-node, has id "knode-ng-1", has name "cell line node";'
+      ' (node: $n1, node-type: $me) isa kefed-node-type;'
+      ' (model: $m, element: $n1) isa kefed-model-element;')
+    w(scratch_db,
+      'match $m isa kefed-model, has id "kefedm-ng-1";'
+      ' $n1 isa kefed-model-node, has id "knode-ng-1";'
+      'insert (model: $m, subject-node: $n1) isa ooevv-subject;')
+
+    # 4. Create kefed-model-node for the assay def; add to model
+    w(scratch_db,
+      'match $assay isa ooevv-assay, has id "ooevv-assay-ng";'
+      ' $m isa kefed-model, has id "kefedm-ng-1";'
+      'insert $n2 isa kefed-model-node, has id "knode-ng-2", has name "western blot node";'
+      ' (node: $n2, node-type: $assay) isa kefed-node-type;'
+      ' (model: $m, element: $n2) isa kefed-model-element;')
+
+    # 5. Link nodes via ooevv-process-input (renamed roles)
+    w(scratch_db,
+      'match $n1 isa kefed-model-node, has id "knode-ng-1";'
+      ' $n2 isa kefed-model-node, has id "knode-ng-2";'
+      'insert (input-node: $n1, consuming-node: $n2) isa ooevv-process-input;')
+
+    # 6. Attach a measurement variable to the assay node via kefed-node-variable
+    w(scratch_db,
+      'insert $vmeas isa ooevv-variable, has id "var-ng-meas", has name "measurement",'
+      '  has ooevv-variable-role "measurement";')
+    w(scratch_db,
+      'match $n2 isa kefed-model-node, has id "knode-ng-2";'
+      ' $vmeas isa ooevv-variable, has id "var-ng-meas";'
+      'insert (node: $n2, variable: $vmeas) isa kefed-node-variable;')
+
+    # 7. Attach a parameter variable to the subject node via kefed-node-variable
+    w(scratch_db,
+      'insert $vparam isa ooevv-variable, has id "var-ng-param", has name "parameter",'
+      '  has ooevv-variable-role "parameter";')
+    w(scratch_db,
+      'match $n1 isa kefed-model-node, has id "knode-ng-1";'
+      ' $vparam isa ooevv-variable, has id "var-ng-param";'
+      'insert (node: $n1, variable: $vparam) isa kefed-node-variable;')
+
+    # Assert: model -> node membership (both nodes)
+    members = r(scratch_db,
+                'match $m isa kefed-model, has id "kefedm-ng-1";'
+                ' (model: $m, element: $n) isa kefed-model-element; $n has name $nn; fetch {"nn": $nn};')
+    assert sorted(x["nn"] for x in members) == ["cell line node", "western blot node"], \
+        f"model element membership wrong: {[x['nn'] for x in members]}"
+
+    # Assert: subject node -> type name (via kefed-node-type -> ooevv def)
+    types = r(scratch_db,
+              'match $n1 isa kefed-model-node, has id "knode-ng-1";'
+              ' (node: $n1, node-type: $t) isa kefed-node-type; $t has name $tn; fetch {"tn": $tn};')
+    assert types and types[0]["tn"] == "cell line", f"node-type name wrong: {types!r}"
+
+    # Assert: assay node carries measurement variable
+    n2_vars = r(scratch_db,
+                'match $n2 isa kefed-model-node, has id "knode-ng-2";'
+                ' (node: $n2, variable: $v) isa kefed-node-variable;'
+                ' $v has ooevv-variable-role $role; fetch {"role": $role};')
+    assert n2_vars and n2_vars[0]["role"] == "measurement", f"assay node variable role wrong: {n2_vars!r}"
+
+    # Assert: subject node carries parameter variable
+    n1_vars = r(scratch_db,
+                'match $n1 isa kefed-model-node, has id "knode-ng-1";'
+                ' (node: $n1, variable: $v) isa kefed-node-variable;'
+                ' $v has ooevv-variable-role $role; fetch {"role": $role};')
+    assert n1_vars and n1_vars[0]["role"] == "parameter", f"subject node variable role wrong: {n1_vars!r}"
+
+    # Assert: process-input edge round-trips (subject node -> assay node)
+    edge = r(scratch_db,
+             'match $n1 isa kefed-model-node, has id "knode-ng-1";'
+             ' $n2 isa kefed-model-node, has id "knode-ng-2";'
+             ' (input-node: $n1, consuming-node: $n2) isa ooevv-process-input;'
+             ' $n1 has id $id1; fetch {"id1": $id1};')
+    assert edge and edge[0]["id1"] == "knode-ng-1", \
+        f"ooevv-process-input edge between nodes missing: {edge!r}"
 
 
 def test_datum_observation_bridge(scratch_db):
