@@ -165,26 +165,47 @@ def ground_note(driver, note_id, fragment_ids):
 
 # ---------------------------------------------------------------- KEfED
 def add_kefed_model(driver, name, experiment_type_term, variables=None, mid=None):
-    """Insert a kefed-model (bigraph template) with ooevv-variable elements.
+    """Insert a kefed-model (bigraph template) with a subject kefed-model-node
+    (typed by a fresh ooevv-material-entity def) carrying ooevv-variable elements
+    via kefed-node-variable.
+
+    2b.2 redesign: variables are no longer inserted directly into kefed-model-element;
+    they are attached to the subject kefed-model-node via kefed-node-variable.
+    An ooevv-element-set (id = eset-{mid}) is created to house the OOEVV def.
 
     variables: list of (role, name, efo_label).
       A 4-tuple (role, name, value_set, efo_label) is also accepted for backward
       compatibility; value_set has no successor in the clean schema and is dropped.
-    State is always 'template' (add_kefed_model builds the design frame, not an
-    instance run; instances are kefed-instance, created separately).
+    State is always 'template'.
     """
     mid = mid or generate_id("kefedm")
     if not _exists(driver, mid):
         ts = get_timestamp()
+        eset_id = f"eset-{mid}"
+        subject_def_id = generate_id("ooevv")
+        subject_node_id = generate_id("knode")
         w(driver, f'insert $m isa kefed-model, has id "{mid}", has name "{escape_string(name)}", '
                   f'has kefed-model-state "template", has created-at {ts};')
         classify(driver, mid, experiment_type_term, provenance="kefed experiment-type", confidence=0.9)
+        w(driver, f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+                  f'has name "{escape_string(name)} elements";')
+        w(driver, f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                  f'insert $me isa ooevv-material-entity, has id "{subject_def_id}", '
+                  f'has name "{escape_string(name)} entity"; '
+                  f'(element-set: $es, element: $me) isa ooevv-set-element;')
+        w(driver, f'match $m isa kefed-model, has id "{mid}"; '
+                  f'$me isa ooevv-material-entity, has id "{subject_def_id}"; '
+                  f'insert $n isa kefed-model-node, has id "{subject_node_id}", '
+                  f'has name "{escape_string(name)} node", has created-at {ts}; '
+                  f'(node: $n, node-type: $me) isa kefed-node-type; '
+                  f'(model: $m, element: $n) isa kefed-model-element; '
+                  f'(model: $m, subject-node: $n) isa ooevv-subject;')
         for var_tuple in (variables or []):
             if len(var_tuple) == 4:
                 role, vname, _value_set, efo = var_tuple  # value_set dropped (no successor)
             else:
                 role, vname, efo = var_tuple
-            vid = generate_id("ooevvv")
+            vid = generate_id("ooevv")
             q = (f'insert $v isa ooevv-variable, has id "{vid}", '
                  f'has name "{escape_string(vname)}", '
                  f'has ooevv-variable-role "{escape_string(role)}", '
@@ -192,9 +213,9 @@ def add_kefed_model(driver, name, experiment_type_term, variables=None, mid=None
             if efo:
                 q += f', has kefed-efo-label "{escape_string(efo)}"'
             w(driver, q + ';')
-            w(driver, f'match $m isa kefed-model, has id "{mid}"; '
+            w(driver, f'match $n isa kefed-model-node, has id "{subject_node_id}"; '
                       f'$v isa ooevv-variable, has id "{vid}"; '
-                      f'insert (model: $m, element: $v) isa kefed-model-element;')
+                      f'insert (node: $n, variable: $v) isa kefed-node-variable;')
     return mid
 
 

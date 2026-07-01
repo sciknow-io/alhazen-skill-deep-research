@@ -32,10 +32,10 @@ def test_sensemaking_experiment_relation(scratch_db):
 # ---------------------------------------------------------------------------
 
 def test_add_kefed_model_with_variables(authoring_db):
-    """add_kefed_model inserts kefed-model + ooevv-variable elements via kefed-model-element.
+    """add_kefed_model builds kefed-model + subject node + variable-bearing nodes (kefed-node-variable).
 
-    NEW signature: add_kefed_model(driver, name, experiment_type_term, variables=None, mid=None)
-    Variables: list of (role, name, efo_label)  [3-tuple; value_set dropped].
+    2b.2 redesign: variables are attached to a kefed-model-node (the subject node) via
+    kefed-node-variable, NOT directly in kefed-model-element as ooevv-variable.
     State must be 'template'.
     """
     import kqed
@@ -58,14 +58,195 @@ def test_add_kefed_model_with_variables(authoring_db):
     assert rows, "kefed-model was not inserted"
     assert rows[0]["s"] == "template", f"expected 'template', got {rows[0]['s']!r}"
 
-    # two ooevv-variable elements linked via kefed-model-element with correct roles
+    # kefed-model-node in kefed-model-element (not ooevv-variable directly)
+    node_rows = r(authoring_db,
+                  'match $m isa kefed-model, has id "kefedm-test-1"; '
+                  '(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+                  'fetch {"nid": $n.id};')
+    assert node_rows, "Expected kefed-model-node in kefed-model-element"
+
+    # variables on nodes via kefed-node-variable (not directly in kefed-model-element)
     var_rows = r(authoring_db,
                  'match $m isa kefed-model, has id "kefedm-test-1"; '
-                 '(model: $m, element: $v) isa kefed-model-element; '
+                 '(model: $m, element: $n) isa kefed-model-element; '
+                 '(node: $n, variable: $v) isa kefed-node-variable; '
                  '$v isa ooevv-variable, has ooevv-variable-role $role; '
                  'fetch {"role": $role};')
     roles = sorted(x["role"] for x in var_rows)
     assert roles == ["measurement", "parameter"], f"unexpected roles: {roles}"
+
+
+# ---------------------------------------------------------------------------
+# Task 2b.2 tests: kefed-model-node graph authoring via real CLI verbs
+# ---------------------------------------------------------------------------
+
+def test_2b2_kefed_node_graph_authoring_roundtrip(authoring_db, capsys):
+    """Task 2b.2: author a small kefed-model-node graph via the real CLI verbs.
+
+    Graph authored:
+      cmd_add_experiment -> kefed-model + element-set
+      cmd_add_entity_node -> subject kefed-model-node typed by ooevv-material-entity def
+      cmd_add_process -> process kefed-model-node typed by ooevv-assay def
+      cmd_link_nodes -> ooevv-process-input(entity_node, process_node)
+      cmd_add_variable(measurement, node=process_node)
+      cmd_add_variable(parameter, node=entity_node)
+
+    Assertions: model->nodes, node->OOEVV type, node->variables (roles),
+                flow edge (entity->process), model subject.
+    Data-signature traversal: from measurement var's node (assay), follow
+      ooevv-process-input backwards to reach entity node, then find parameter var.
+    """
+    import scientific_literature as sl
+
+    # 1. Create bundle + experiment (model + element-set)
+    w(authoring_db, 'insert $b isa scilit-paper-sensemaking, has id "scsm-2b2", has name "2b2 bundle";')
+    args_exp = types.SimpleNamespace(bundle="scsm-2b2", name="2b2 SIRT3 assay")
+    sl.cmd_add_experiment(args_exp)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_experiment failed: {res}"
+    exp_id = res["experiment_id"]
+
+    # 2. Add subject entity node (ooevv-material-entity def, marked as model subject)
+    args_entity = types.SimpleNamespace(
+        experiment=exp_id, template=None,
+        name="SIRT3 cell line", subject=True,
+        definition="Murine hematopoietic stem cells expressing SIRT3.",
+    )
+    sl.cmd_add_entity_node(args_entity)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_entity_node failed: {res}"
+    entity_node_id = res["entity_node_id"]
+
+    # 3. Add process node (ooevv-assay def)
+    args_proc = types.SimpleNamespace(
+        experiment=exp_id, template=None,
+        name="western blot", type="assay",
+        parent=None,
+        definition="SDS-PAGE western blot for SIRT3 protein detection.",
+        long_form=None,
+    )
+    sl.cmd_add_process(args_proc)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_process failed: {res}"
+    proc_node_id = res["process_id"]  # kefed-model-node id
+
+    # 4. Link subject -> assay via ooevv-process-input
+    args_link = types.SimpleNamespace(from_node=entity_node_id, to_node=proc_node_id, role="input")
+    sl.cmd_link_nodes(args_link)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_link_nodes failed: {res}"
+
+    # 5. Quality prerequisite + measurement variable on the assay node
+    w(authoring_db,
+      'insert $q isa ooevv-quality, has id "scqual-2b2", has name "SIRT3 signal", '
+      'has ooevv-definition "SIRT3 band intensity from western blot.", '
+      'has created-at 2026-06-30T00:00:00;')
+    args_meas = types.SimpleNamespace(
+        node=proc_node_id,
+        name="SIRT3 band intensity", role="measurement",
+        quality="scqual-2b2", scale_type="numeric",
+        unit="AU", min=None, max=None, values=None,
+        definition="Normalized SIRT3 band intensity (measurement role).",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_meas)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_variable (measurement) failed: {res}"
+    meas_var_id = res["variable_id"]
+
+    # 6. Parameter variable on the subject entity node
+    args_param = types.SimpleNamespace(
+        node=entity_node_id,
+        name="cell line genotype", role="parameter",
+        quality="scqual-2b2", scale_type="nominal",
+        unit=None, min=None, max=None, values=None,
+        definition="Cell line genotype used as experimental subject (parameter role).",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_param)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_variable (parameter) failed: {res}"
+    param_var_id = res["variable_id"]
+
+    # === INDEPENDENT ASSERTIONS ===
+
+    # A. Model has 2 nodes
+    node_rows = r(authoring_db,
+                  f'match $m isa kefed-model, has id "{exp_id}"; '
+                  f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+                  f'fetch {{"nid": $n.id}};')
+    assert len(node_rows) == 2, f"Expected 2 nodes, got {len(node_rows)}: {node_rows}"
+
+    # B. Entity node typed by ooevv-material-entity
+    type_rows = r(authoring_db,
+                  f'match $n isa kefed-model-node, has id "{entity_node_id}"; '
+                  f'(node: $n, node-type: $nt) isa kefed-node-type; $nt isa ooevv-material-entity; '
+                  f'fetch {{"nid": $n.id}};')
+    assert type_rows, "Entity node not typed by ooevv-material-entity"
+
+    # C. Process node typed by ooevv-assay
+    type_rows = r(authoring_db,
+                  f'match $n isa kefed-model-node, has id "{proc_node_id}"; '
+                  f'(node: $n, node-type: $nt) isa kefed-node-type; $nt isa ooevv-assay; '
+                  f'fetch {{"nid": $n.id}};')
+    assert type_rows, "Process node not typed by ooevv-assay"
+
+    # D. Entity node is the model subject (ooevv-subject)
+    subj_rows = r(authoring_db,
+                  f'match $m isa kefed-model, has id "{exp_id}"; '
+                  f'$n isa kefed-model-node, has id "{entity_node_id}"; '
+                  f'(model: $m, subject-node: $n) isa ooevv-subject; '
+                  f'fetch {{"nid": $n.id}};')
+    assert subj_rows, "Entity node not marked as model subject via ooevv-subject"
+
+    # E. Flow edge: entity -> assay via ooevv-process-input
+    flow_rows = r(authoring_db,
+                  f'match $src isa kefed-model-node, has id "{entity_node_id}"; '
+                  f'$tgt isa kefed-model-node, has id "{proc_node_id}"; '
+                  f'(input-node: $src, consuming-node: $tgt) isa ooevv-process-input; '
+                  f'fetch {{"src": $src.id}};')
+    assert flow_rows, "ooevv-process-input flow edge not found (entity -> assay)"
+
+    # F. Measurement variable on assay node via kefed-node-variable
+    meas_rows = r(authoring_db,
+                  f'match $n isa kefed-model-node, has id "{proc_node_id}"; '
+                  f'$v isa ooevv-variable, has id "{meas_var_id}"; '
+                  f'(node: $n, variable: $v) isa kefed-node-variable; '
+                  f'$v has ooevv-variable-role $role; '
+                  f'fetch {{"role": $role}};')
+    assert meas_rows and meas_rows[0]["role"] == "measurement", f"Measurement var not on assay node: {meas_rows}"
+
+    # G. Parameter variable on entity node via kefed-node-variable
+    param_rows = r(authoring_db,
+                   f'match $n isa kefed-model-node, has id "{entity_node_id}"; '
+                   f'$v isa ooevv-variable, has id "{param_var_id}"; '
+                   f'(node: $n, variable: $v) isa kefed-node-variable; '
+                   f'$v has ooevv-variable-role $role; '
+                   f'fetch {{"role": $role}};')
+    assert param_rows and param_rows[0]["role"] == "parameter", f"Parameter var not on entity node: {param_rows}"
+
+    # H. DATA-SIGNATURE traversal: from meas var's node (assay), traverse ooevv-process-input
+    #    backwards to reach entity node, which carries the parameter var.
+    sig_rows = r(authoring_db,
+                 f'match '
+                 f'$assay_node isa kefed-model-node, has id "{proc_node_id}"; '
+                 f'$meas_v isa ooevv-variable, has id "{meas_var_id}"; '
+                 f'(node: $assay_node, variable: $meas_v) isa kefed-node-variable; '
+                 f'(input-node: $entity_node, consuming-node: $assay_node) isa ooevv-process-input; '
+                 f'$param_v isa ooevv-variable, has id "{param_var_id}"; '
+                 f'(node: $entity_node, variable: $param_v) isa kefed-node-variable; '
+                 f'fetch {{"param_id": $param_v.id}};')
+    assert sig_rows, (
+        "Data-signature traversal FAILED: could not reach parameter var from "
+        "measurement var via ooevv-process-input edge"
+    )
+    assert sig_rows[0]["param_id"] == param_var_id
 
 
 def test_add_observation_bundle_threaded(authoring_db):
@@ -271,8 +452,11 @@ def test_cmd_add_datum_uses_ooevv_variable(authoring_db, capsys):
 # ---------------------------------------------------------------------------
 
 def test_t4_bigraph_authoring_roundtrip(authoring_db, capsys):
-    """Task 4: drive a small bigraph through cmd_add_experiment / cmd_add_process /
-    cmd_add_variable / cmd_bind_parameter and assert the NEW relations round-trip correctly."""
+    """Task 4 (revised 2b.2): drive a small bigraph through the node-based verbs:
+    cmd_add_experiment / cmd_add_process (returns kefed-model-node id) /
+    cmd_add_variable (--node) / cmd_bind_parameter (--node, idempotent).
+    Retired: ooevv-process directly in kefed-model-element; ooevv-produced-by;
+             ooevv-parameter-binding / binding-bearer role."""
     import scientific_literature as sl
 
     # --- prerequisites ---
@@ -283,7 +467,7 @@ def test_t4_bigraph_authoring_roundtrip(authoring_db, capsys):
       'has ooevv-definition "Enzymatic deacetylation activity of SIRT3 in mitochondria.", '
       'has created-at 2026-06-30T00:00:00;')
 
-    # 1. add-experiment -> scilit-sensemaking-experiment
+    # 1. add-experiment -> scilit-sensemaking-experiment + element-set
     args_exp = types.SimpleNamespace(bundle="scsm-t4-1", name="T4 SIRT3 assay")
     sl.cmd_add_experiment(args_exp)
     out = capsys.readouterr().out
@@ -299,7 +483,7 @@ def test_t4_bigraph_authoring_roundtrip(authoring_db, capsys):
     assert rows, f"scilit-sensemaking-experiment not found for experiment {exp_id!r}"
     assert rows[0]["eid"] == exp_id
 
-    # 2. add-process -> kefed-model-element(model, element)
+    # 2. add-process -> kefed-model-node (NOT ooevv-process directly in kefed-model-element)
     args_proc = types.SimpleNamespace(
         experiment=exp_id, template=None,
         name="Western blot assay", type="assay",
@@ -311,24 +495,30 @@ def test_t4_bigraph_authoring_roundtrip(authoring_db, capsys):
     out = capsys.readouterr().out
     res = json.loads(out)
     assert res["success"] is True, f"cmd_add_process failed: {res}"
-    proc_id = res["process_id"]
+    proc_node_id = res["process_id"]  # now a kefed-model-node id
 
+    # node in kefed-model-element (kefed-model-node, NOT ooevv-process directly)
     rows = r(authoring_db,
              f'match $m isa kefed-model, has id "{exp_id}"; '
-             f'$p isa ooevv-process, has id "{proc_id}"; '
-             f'(model: $m, element: $p) isa kefed-model-element; '
-             f'fetch {{"pid": $p.id}};')
-    assert rows, f"kefed-model-element not found for process {proc_id!r}"
-    assert rows[0]["pid"] == proc_id
+             f'$n isa kefed-model-node, has id "{proc_node_id}"; '
+             f'(model: $m, element: $n) isa kefed-model-element; '
+             f'fetch {{"nid": $n.id}};')
+    assert rows, f"kefed-model-element not found for node {proc_node_id!r}"
+    assert rows[0]["nid"] == proc_node_id
 
-    # 3. add-variable (measurement) -> ooevv-variable + kefed-model-element +
-    #    ooevv-produced-by with produced-variable/producing-process roles
+    # node typed by ooevv-assay via kefed-node-type
+    rows = r(authoring_db,
+             f'match $n isa kefed-model-node, has id "{proc_node_id}"; '
+             f'(node: $n, node-type: $nt) isa kefed-node-type; $nt isa ooevv-assay; '
+             f'fetch {{"nid": $n.id}};')
+    assert rows, "Process node not typed by ooevv-assay via kefed-node-type"
+
+    # 3. add-variable (measurement) -> kefed-node-variable on process node (NOT kefed-model-element)
     args_meas = types.SimpleNamespace(
-        experiment=exp_id, template=None,
+        node=proc_node_id,
         name="SIRT3 signal", role="measurement",
         quality="scqual-t4-1", scale_type="numeric",
         unit="AU", min=None, max=None, values=None,
-        produced_by=proc_id,
         definition="Normalized SIRT3 band intensity from western blot.",
         long_form=None,
     )
@@ -338,36 +528,27 @@ def test_t4_bigraph_authoring_roundtrip(authoring_db, capsys):
     assert res["success"] is True, f"cmd_add_variable (measurement) failed: {res}"
     var_meas_id = res["variable_id"]
 
-    # ooevv-variable + kefed-model-element
+    # measurement variable on node via kefed-node-variable
     rows = r(authoring_db,
-             f'match $m isa kefed-model, has id "{exp_id}"; '
+             f'match $n isa kefed-model-node, has id "{proc_node_id}"; '
              f'$v isa ooevv-variable, has id "{var_meas_id}"; '
-             f'(model: $m, element: $v) isa kefed-model-element; '
+             f'(node: $n, variable: $v) isa kefed-node-variable; '
              f'fetch {{"vid": $v.id}};')
-    assert rows, f"kefed-model-element not found for measurement variable {var_meas_id!r}"
+    assert rows, f"kefed-node-variable not found for measurement {var_meas_id!r}"
     assert rows[0]["vid"] == var_meas_id
 
-    # ooevv-produced-by with NEW role names
-    rows = r(authoring_db,
-             f'match $v isa ooevv-variable, has id "{var_meas_id}"; '
-             f'$p isa ooevv-process, has id "{proc_id}"; '
-             f'(produced-variable: $v, producing-process: $p) isa ooevv-produced-by; '
-             f'fetch {{"vid": $v.id}};')
-    assert rows, "ooevv-produced-by produced-variable/producing-process not found"
-
-    # ooevv-variable-role (not kefed-variable-role)
+    # ooevv-variable-role = measurement
     rows = r(authoring_db,
              f'match $v isa ooevv-variable, has id "{var_meas_id}", has ooevv-variable-role $vr; '
              f'fetch {{"vr": $vr}};')
     assert rows and rows[0]["vr"] == "measurement", f"ooevv-variable-role mismatch: {rows}"
 
-    # 4. add-variable (parameter) for bind-parameter test
+    # 4. add-variable (parameter) on same process node
     args_param = types.SimpleNamespace(
-        experiment=exp_id, template=None,
+        node=proc_node_id,
         name="antibody concentration", role="parameter",
         quality="scqual-t4-1", scale_type="numeric",
         unit="ug/mL", min=None, max=None, values=None,
-        produced_by=None,
         definition="Concentration of primary antibody used in the western blot.",
         long_form=None,
     )
@@ -377,22 +558,23 @@ def test_t4_bigraph_authoring_roundtrip(authoring_db, capsys):
     assert res["success"] is True, f"cmd_add_variable (parameter) failed: {res}"
     param_id = res["variable_id"]
 
-    # 5. bind-parameter -> binding-bearer (not binding-process)
+    # 5. bind-parameter -> kefed-node-variable (idempotent; already linked via cmd_add_variable)
     args_bind = types.SimpleNamespace(
-        process=proc_id, parameter=param_id, target_entity=None,
+        node=proc_node_id, parameter=param_id, target_entity=None,
     )
     sl.cmd_bind_parameter(args_bind)
     out = capsys.readouterr().out
     res = json.loads(out)
     assert res["success"] is True, f"cmd_bind_parameter failed: {res}"
 
+    # kefed-node-variable for the bound parameter (idempotent — still exactly 1 link)
     rows = r(authoring_db,
-             f'match $p isa ooevv-process, has id "{proc_id}"; '
+             f'match $n isa kefed-model-node, has id "{proc_node_id}"; '
              f'$v isa ooevv-variable, has id "{param_id}"; '
-             f'(binding-bearer: $p, bound-parameter: $v) isa ooevv-parameter-binding; '
-             f'fetch {{"pid": $p.id}};')
-    assert rows, "ooevv-parameter-binding with binding-bearer role not found"
-    assert rows[0]["pid"] == proc_id
+             f'(node: $n, variable: $v) isa kefed-node-variable; '
+             f'fetch {{"nid": $n.id}};')
+    assert rows, "kefed-node-variable for bound parameter not found"
+    assert rows[0]["nid"] == proc_node_id
 
 
 def test_t4_ensure_template_uses_kefed_model_state(authoring_db, capsys):
@@ -722,29 +904,27 @@ def test_t7_load_bundle_experiment_variable(authoring_db, capsys):
     sl.cmd_add_process(args_proc)
     proc_id = json.loads(capsys.readouterr().out)["process_id"]
 
-    # 5. measurement variable (produced by the process)
+    # 5. measurement variable on the process node (node-based, no ooevv-produced-by)
     w(authoring_db,
       'insert $q isa ooevv-quality, has id "scqual-t7-1", has name "signal", '
       'has ooevv-definition "test signal", has created-at 2026-06-30T00:00:00;')
     args_meas = _types.SimpleNamespace(
-        experiment=exp_id, template=None,
+        node=proc_id,  # proc_id is now a kefed-model-node id
         name="SIRT3 band", role="measurement",
         quality="scqual-t7-1", scale_type="numeric",
         unit="AU", min=None, max=None, values=None,
-        produced_by=proc_id,
         definition="Normalized SIRT3 band intensity from western blot.",
         long_form=None,
     )
     sl.cmd_add_variable(args_meas)
     meas_id = json.loads(capsys.readouterr().out)["variable_id"]
 
-    # 6. parameter variable bound to process
+    # 6. parameter variable on the process node (node-based, no ooevv-parameter-binding)
     args_param = _types.SimpleNamespace(
-        experiment=exp_id, template=None,
+        node=proc_id,
         name="antibody conc", role="parameter",
         quality="scqual-t7-1", scale_type="numeric",
         unit="ug/mL", min=None, max=None, values=None,
-        produced_by=None,
         definition="Concentration of primary antibody used in western blot.",
         long_form=None,
     )
@@ -752,7 +932,7 @@ def test_t7_load_bundle_experiment_variable(authoring_db, capsys):
     param_id = json.loads(capsys.readouterr().out)["variable_id"]
 
     args_bind = _types.SimpleNamespace(
-        process=proc_id, parameter=param_id, target_entity=None,
+        node=proc_id, parameter=param_id, target_entity=None,
     )
     sl.cmd_bind_parameter(args_bind)
     capsys.readouterr()  # discard bind output
@@ -859,7 +1039,7 @@ def test_t5_cmd_create_bundle_iteration_wiring(authoring_db, capsys):
 
 def test_t8_load_template_no_slots(authoring_db, capsys):
     """_load_template must return shape from kefed-model+state=template; NO 'slots' key;
-    'variables' from kefed-model-element; 'graph' from _load_experiment."""
+    'variables' gathered via model->node->kefed-node-variable; 'graph' from _load_experiment."""
     import types as _types
     import scientific_literature as sl
     from typedb.driver import TransactionType
@@ -874,20 +1054,30 @@ def test_t8_load_template_no_slots(authoring_db, capsys):
     sl.cmd_ensure_template(args_tpl)
     tid = json.loads(capsys.readouterr().out)["template_id"]
 
-    # 2. Add a parameter variable to the template
-    args_var = _types.SimpleNamespace(
+    # 2. Add a process node to the template (needed so we have a node to attach var to)
+    args_proc = _types.SimpleNamespace(
         experiment=None, template=tid,
+        name="T8 assay step", type="assay",
+        parent=None,
+        definition="Test assay step for T8 template.",
+        long_form=None,
+    )
+    sl.cmd_add_process(args_proc)
+    proc_node_id = json.loads(capsys.readouterr().out)["process_id"]
+
+    # 3. Add a parameter variable to the process node (via kefed-node-variable)
+    args_var = _types.SimpleNamespace(
+        node=proc_node_id,
         name="T8 antibody conc", role="parameter",
         quality="scqual-t8-1", scale_type="numeric",
         unit="ug/mL", min=None, max=None, values=None,
-        produced_by=None,
         definition="Concentration of primary antibody in T8 test.",
         long_form=None,
     )
     sl.cmd_add_variable(args_var)
     var_id = json.loads(capsys.readouterr().out)["variable_id"]
 
-    # 3. Call _load_template -> assert shape
+    # 4. Call _load_template -> assert shape
     driver = authoring_db
     with driver.transaction(sl.TYPEDB_DATABASE, TransactionType.READ) as tx:
         tpl = sl._load_template(tx, tid)
@@ -921,13 +1111,23 @@ def test_t8_load_instance_no_bindings(authoring_db, capsys):
     sl.cmd_ensure_template(args_tpl)
     tid = json.loads(capsys.readouterr().out)["template_id"]
 
-    # Variable on the template (measurement)
-    args_var = _types.SimpleNamespace(
+    # Add a process node to the template (needed for variable attachment)
+    args_proc = _types.SimpleNamespace(
         experiment=None, template=tid,
+        name="T8b assay step", type="assay",
+        parent=None,
+        definition="Test assay step for T8b template.",
+        long_form=None,
+    )
+    sl.cmd_add_process(args_proc)
+    proc_node_id_t8b = json.loads(capsys.readouterr().out)["process_id"]
+
+    # Variable on the template process node (measurement via kefed-node-variable)
+    args_var = _types.SimpleNamespace(
+        node=proc_node_id_t8b,
         name="T8b measurement", role="measurement",
         quality="scqual-t8b-1", scale_type="numeric",
         unit="AU", min=None, max=None, values=None,
-        produced_by=None,
         definition="A measurement variable for T8b test.",
         long_form=None,
     )
