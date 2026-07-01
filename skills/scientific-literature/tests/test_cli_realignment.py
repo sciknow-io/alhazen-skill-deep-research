@@ -1389,6 +1389,230 @@ def test_shared_elementset_def_reuse(authoring_db, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Task 3a.3 tests: data-signature read verb + add-datum validation
+# ---------------------------------------------------------------------------
+
+def test_data_signature_traversal(authoring_db, capsys):
+    """_data_signature + cmd_show_data_signature return the correct index for a measurement.
+
+    Graph: subject entity node (parameter "genotype") -[ooevv-process-input]->
+           assay node (measurement "expression").
+    The data signature for "expression" must include "genotype" as an index parameter.
+    """
+    import pytest
+    import scientific_literature as sl
+    from typedb.driver import TransactionType
+
+    # 1. Create experiment (kefed-model + element-set) under a bundle
+    w(authoring_db, 'insert $b isa scilit-paper-sensemaking, has id "scsm-datasig-1", has name "datasig bundle";')
+    args_exp = types.SimpleNamespace(
+        bundle="scsm-datasig-1",
+        name="Data signature test experiment",
+        definition="Test experiment for data signature traversal.",
+        long_form=None,
+        element_set=None,
+    )
+    sl.cmd_add_experiment(args_exp)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_experiment failed: {res}"
+    exp_id = res["experiment_id"]
+
+    # 2. Add subject entity node
+    args_entity = types.SimpleNamespace(
+        experiment=exp_id, template=None,
+        name="Cell line", subject=True,
+        definition="Subject cell line entity.",
+    )
+    sl.cmd_add_entity_node(args_entity)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_entity_node failed: {res}"
+    entity_node_id = res["entity_node_id"]
+
+    # 3. Add assay process node
+    args_proc = types.SimpleNamespace(
+        experiment=exp_id, template=None,
+        name="gene expression assay", type="assay",
+        parent=None,
+        definition="Assay measuring gene expression levels.",
+        long_form=None,
+    )
+    sl.cmd_add_process(args_proc)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_process failed: {res}"
+    proc_node_id = res["process_id"]
+
+    # 4. Link entity -> assay via ooevv-process-input
+    args_link = types.SimpleNamespace(from_node=entity_node_id, to_node=proc_node_id, role="input")
+    sl.cmd_link_nodes(args_link)
+    out = capsys.readouterr().out
+    assert json.loads(out)["success"] is True, "cmd_link_nodes failed"
+
+    # 5. Quality prerequisite for variables
+    w(authoring_db,
+      'insert $q isa ooevv-quality, has id "scqual-datasig-1", has name "gene expression signal", '
+      'has ooevv-definition "mRNA expression level.", has created-at 2026-06-30T00:00:00;')
+
+    # 6. Parameter variable "genotype" on entity node
+    args_param = types.SimpleNamespace(
+        node=entity_node_id,
+        name="genotype", role="parameter",
+        quality="scqual-datasig-1", scale_type="nominal",
+        unit=None, min=None, max=None, values=None,
+        definition="Cell line genotype (parameter).",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_param)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_variable (parameter) failed: {res}"
+    param_var_id = res["variable_id"]
+
+    # 7. Measurement variable "expression" on assay node
+    args_meas = types.SimpleNamespace(
+        node=proc_node_id,
+        name="expression", role="measurement",
+        quality="scqual-datasig-1", scale_type="numeric",
+        unit="RPKM", min=None, max=None, values=None,
+        definition="Gene expression level (measurement).",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_meas)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_variable (measurement) failed: {res}"
+    meas_var_id = res["variable_id"]
+
+    # === TEST _data_signature ===
+    with authoring_db.transaction(sl.TYPEDB_DATABASE, TransactionType.READ) as tx:
+        sig = sl._data_signature(tx, exp_id)
+
+    assert meas_var_id in sig, f"measurement var {meas_var_id!r} missing from signature: {sig}"
+    meas_entry = sig[meas_var_id]
+    assert meas_entry["name"] == "expression"
+    index_ids = [item["id"] for item in meas_entry["index"]]
+    assert param_var_id in index_ids, (
+        f"parameter var {param_var_id!r} ('genotype') not in measurement index: {meas_entry['index']}"
+    )
+    genotype_entry = next(item for item in meas_entry["index"] if item["id"] == param_var_id)
+    assert genotype_entry["name"] == "genotype"
+    assert genotype_entry["role"] == "parameter"
+
+    # === TEST cmd_show_data_signature ===
+    args_sig = types.SimpleNamespace(model=exp_id)
+    sl.cmd_show_data_signature(args_sig)
+    out = capsys.readouterr().out
+    sig_json = json.loads(out)
+    assert meas_var_id in sig_json, f"measurement var missing from cmd_show_data_signature output"
+    assert any(item["id"] == param_var_id for item in sig_json[meas_var_id]["index"])
+
+
+def test_add_datum_validation_against_model(authoring_db, capsys):
+    """cmd_add_datum validates --cells variable ids against the instance's model.
+
+    Case (a): instance WITHOUT ooevv-instance-of -> validation skipped (backward compat).
+    Case (b): instance WITH ooevv-instance-of ->
+        - unknown variable id -> success=false, error contains variable id
+        - valid model variable id -> success=true
+    """
+    import pytest
+    import scientific_literature as sl
+
+    # === Case (a): instance without model link — validation skipped ===
+    w(authoring_db,
+      'insert $v isa ooevv-variable, has id "oov-nomodel-v1", has name "free var", '
+      'has ooevv-variable-role "measurement";')
+    w(authoring_db,
+      'insert $i isa kefed-instance, has id "scinst-nomodel-1", has name "no model instance";')
+    args_nomodel = types.SimpleNamespace(
+        instance="scinst-nomodel-1",
+        cells=json.dumps([{"variable": "oov-nomodel-v1", "value": "x"}]),
+        observation=None, gloss=None,
+    )
+    sl.cmd_add_datum(args_nomodel)
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert result["success"] is True, f"No-model instance should skip validation: {result}"
+
+    # === Case (b): instance WITH ooevv-instance-of ===
+
+    # Build minimal model (experiment) with one process node + one measurement variable
+    w(authoring_db,
+      'insert $b isa scilit-paper-sensemaking, has id "scsm-valtest-1", has name "validation bundle";')
+    args_exp = types.SimpleNamespace(
+        bundle="scsm-valtest-1",
+        name="validation test experiment",
+        definition="Test experiment for add-datum validation.",
+        long_form=None,
+        element_set=None,
+    )
+    sl.cmd_add_experiment(args_exp)
+    model_id = json.loads(capsys.readouterr().out)["experiment_id"]
+
+    args_proc = types.SimpleNamespace(
+        experiment=model_id, template=None,
+        name="test assay", type="assay",
+        parent=None,
+        definition="A test assay for validation.",
+        long_form=None,
+    )
+    sl.cmd_add_process(args_proc)
+    proc_node_id = json.loads(capsys.readouterr().out)["process_id"]
+
+    w(authoring_db,
+      'insert $q isa ooevv-quality, has id "scqual-valtest-1", has name "val signal", '
+      'has ooevv-definition "Test signal for validation.", has created-at 2026-06-30T00:00:00;')
+
+    args_meas_v = types.SimpleNamespace(
+        node=proc_node_id, name="test measurement", role="measurement",
+        quality="scqual-valtest-1", scale_type="numeric",
+        unit="AU", min=None, max=None, values=None,
+        definition="A test measurement for validation.",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_meas_v)
+    model_var_id = json.loads(capsys.readouterr().out)["variable_id"]
+
+    # Create an instance linked to the model via ooevv-instance-of
+    args_inst = types.SimpleNamespace(
+        bundle="scsm-valtest-1",
+        template=model_id,
+        name="validation instance run",
+    )
+    sl.cmd_instantiate_template(args_inst)
+    inst_id = json.loads(capsys.readouterr().out)["instance_id"]
+
+    # (b1) cell variable NOT in model -> success=false
+    bogus_var_id = "oov-bogus-not-in-model"
+    args_bad = types.SimpleNamespace(
+        instance=inst_id,
+        cells=json.dumps([{"variable": bogus_var_id, "value": "x"}]),
+        observation=None, gloss=None,
+    )
+    with pytest.raises(SystemExit):
+        sl.cmd_add_datum(args_bad)
+    out = capsys.readouterr().out
+    result_bad = json.loads(out)
+    assert result_bad["success"] is False, f"Expected validation failure: {result_bad}"
+    assert "unknown variable" in result_bad["error"], f"Unexpected error message: {result_bad['error']}"
+    assert bogus_var_id in result_bad["error"], f"Bogus var id missing from error: {result_bad['error']}"
+
+    # (b2) cell variable IN model -> success=true
+    args_good = types.SimpleNamespace(
+        instance=inst_id,
+        cells=json.dumps([{"variable": model_var_id, "value": "42", "number": 42.0}]),
+        observation=None, gloss=None,
+    )
+    sl.cmd_add_datum(args_good)
+    out = capsys.readouterr().out
+    result_good = json.loads(out)
+    assert result_good["success"] is True, f"Expected validation pass: {result_good}"
+    assert result_good["cells"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Task 9: Retired-type guard (pure-logic, no DB)
 # ---------------------------------------------------------------------------
 

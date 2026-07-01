@@ -2545,6 +2545,109 @@ def _load_experiment(tx, exp_id):
     return {"id": exp_id, "processes": nodes}
 
 
+def _data_signature(tx, model_id):
+    """Compute the data signature for a KEfED model.
+
+    For each measurement-role ooevv-variable attached (via kefed-node-variable) to a node
+    in the model (kefed-model-element), compute its index set = the parameter- and
+    constant-role variables on nodes reachable upstream from the measurement's node.
+
+    Traversal rule (BFS, bounded to model's nodes):
+      Starting from the measurement variable's node, follow flow edges in the UPSTREAM
+      direction to discover all nodes that feed data into the measurement:
+        - ooevv-process-input in reverse: find input-node where consuming-node = current
+        - ooevv-process-output in reverse: find producing-node where output-node = current
+      Collect parameter- and constant-role variables from EVERY visited node (including
+      the measurement's own node). Traversal stops when no new in-model nodes are found.
+
+    Returns:
+        dict: {measurement_var_id: {"name": <name>, "index": [{"id":..., "name":..., "role":...}, ...]}}
+    """
+    esc = escape_string(model_id)
+
+    # 1. Get all node ids in this model (to bound traversal)
+    node_rows = list(tx.query(
+        f'match $m isa kefed-model, has id "{esc}"; '
+        f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+        f'fetch {{ "id": $n.id }};').resolve())
+    model_node_ids = {r["id"] for r in node_rows}
+
+    # 2. Build upstream adjacency map: node_id -> {set of node_ids that feed into it}
+    #    Follow ooevv-process-input (input-node -> consuming-node) backwards.
+    #    Follow ooevv-process-output (producing-node -> output-node) backwards.
+    upstream = {nid: set() for nid in model_node_ids}
+    for nid in model_node_ids:
+        ne = escape_string(nid)
+        for r in tx.query(
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(input-node: $src, consuming-node: $n) isa ooevv-process-input; '
+            f'fetch {{ "src": $src.id }};').resolve():
+            if r["src"] in model_node_ids:
+                upstream[nid].add(r["src"])
+        for r in tx.query(
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(producing-node: $src, output-node: $n) isa ooevv-process-output; '
+            f'fetch {{ "src": $src.id }};').resolve():
+            if r["src"] in model_node_ids:
+                upstream[nid].add(r["src"])
+
+    # 3. Find all measurement variables and their home nodes in this model
+    meas_rows = list(tx.query(
+        f'match $m isa kefed-model, has id "{esc}"; '
+        f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+        f'(node: $n, variable: $v) isa kefed-node-variable; '
+        f'$v isa ooevv-variable, has ooevv-variable-role "measurement"; '
+        f'$v has name $vname; '
+        f'fetch {{ "vid": $v.id, "vname": $vname, "nid": $n.id }};').resolve())
+
+    # 4. For each measurement, BFS upstream and collect parameter/constant variables
+    result = {}
+    for row in meas_rows:
+        vid = row["vid"]
+        vname = row.get("vname", "")
+        start_nid = row["nid"]
+
+        # BFS from start_nid following upstream edges
+        visited = set()
+        queue = [start_nid]
+        while queue:
+            curr = queue.pop(0)
+            if curr in visited:
+                continue
+            visited.add(curr)
+            for parent in upstream.get(curr, set()):
+                if parent not in visited:
+                    queue.append(parent)
+
+        # Collect parameter/constant variables from all visited nodes
+        index = []
+        for node_id in visited:
+            ne = escape_string(node_id)
+            pv_rows = list(tx.query(
+                f'match $n isa kefed-model-node, has id "{ne}"; '
+                f'(node: $n, variable: $pv) isa kefed-node-variable; '
+                f'$pv isa ooevv-variable, has ooevv-variable-role $prole; '
+                f'$pv has name $pvname; '
+                f'fetch {{ "id": $pv.id, "role": $prole, "name": $pvname }};').resolve())
+            for pv in pv_rows:
+                if pv["role"] in ("parameter", "constant"):
+                    index.append({"id": pv["id"], "name": pv.get("name", ""), "role": pv["role"]})
+
+        result[vid] = {"name": vname, "index": index}
+
+    return result
+
+
+def cmd_show_data_signature(args):
+    """Show the data signature (index sets) for each measurement variable in a KEfED model.
+    Prints the signature as a JSON dict: {measurement_var_id: {name, index: [{id, name, role}]}}."""
+    model_id = args.model
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            sig = _data_signature(tx, model_id)
+    print(json.dumps(sig, indent=2))
+
+
 def cmd_show_experiment(args):
     """Show one experiment's full protocol graph (processes, hierarchy, parameters, measurements)."""
     with get_driver() as driver:
@@ -3736,9 +3839,10 @@ def cmd_add_experiment(args):
 
 def cmd_add_process(args):
     """Find-or-create an OOEVV process DEFINITION (ooevv-assay / ooevv-material-processing /
-    ooevv-data-transformation) in the model's element-set (eset-<model_id>), then create a
-    kefed-model-node typed by it (kefed-node-type) and add the node to the model
-    (kefed-model-element). Returns the node id as 'process_id'."""
+    ooevv-data-transformation) in the model's element-set (resolved via the
+    kefed-model-elementset relation), then create a kefed-model-node typed by it
+    (kefed-node-type) and add the node to the model (kefed-model-element).
+    Returns the node id as 'process_id'."""
     proc_types = {"assay": "ooevv-assay", "material-processing": "ooevv-material-processing",
                   "data-transformation": "ooevv-data-transformation"}
     if args.type not in proc_types:
@@ -4167,6 +4271,26 @@ def cmd_add_datum(args):
                                  f'fetch {{ "id": $i.id }};').resolve())
             if not inst:
                 print(json.dumps({"success": False, "error": "Instance not found"})); sys.exit(1)
+            # Validate cell variable ids against the model (if instance has one via ooevv-instance-of).
+            # If no model is linked, skip validation for backward compatibility.
+            model_rows = list(tx.query(
+                f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
+                f'(instance: $i, model: $m) isa ooevv-instance-of; '
+                f'fetch {{ "mid": $m.id }};').resolve())
+            if model_rows:
+                mid = escape_string(model_rows[0]["mid"])
+                var_rows = list(tx.query(
+                    f'match $m isa kefed-model, has id "{mid}"; '
+                    f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+                    f'(node: $n, variable: $v) isa kefed-node-variable; '
+                    f'fetch {{ "vid": $v.id }};').resolve())
+                model_vars = {r["vid"] for r in var_rows}
+                for c in cells:
+                    cell_vid = str(c["variable"])
+                    if cell_vid not in model_vars:
+                        print(json.dumps({"success": False,
+                                          "error": f"unknown variable {cell_vid!r} for this model"}))
+                        sys.exit(1)
             did = generate_id("scdatum"); ts = get_timestamp()
             tx.query(
                 f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
@@ -4739,6 +4863,11 @@ def main():
     p = subparsers.add_parser("show-instance", help="Show one template instance (filled slots + data spreadsheet)")
     p.add_argument("--id", required=True, help="Instance id (scinst-...)")
 
+    p = subparsers.add_parser("show-data-signature",
+        help="Show data signature (index sets) for each measurement variable in a KEfED model")
+    p.add_argument("--model", "--experiment", dest="model", required=True,
+        help="KEfED model id (kefedm-...)")
+
     # --- ANALYSIS stage: synthesized claims + evidence warrants ---
     # add-synthesized-claim
     p = subparsers.add_parser("add-synthesized-claim",
@@ -4859,6 +4988,7 @@ def main():
         "show-experiment": cmd_show_experiment,
         "show-template": cmd_show_template,
         "show-instance": cmd_show_instance,
+        "show-data-signature": cmd_show_data_signature,
         "add-synthesized-claim": cmd_add_synthesized_claim,
         "add-evidence": cmd_add_evidence,
         "add-citation-impact": cmd_add_citation_impact,
