@@ -164,31 +164,37 @@ def ground_note(driver, note_id, fragment_ids):
 
 
 # ---------------------------------------------------------------- KEfED
-def add_kefed_model(driver, name, experiment_type_term, variables=None, mid=None):
+def add_kefed_model(driver, name, experiment_type_term, variables=None, mid=None, definition=None):
     """Insert a kefed-model (bigraph template) with a subject kefed-model-node
     (typed by a fresh ooevv-material-entity def) carrying ooevv-variable elements
     via kefed-node-variable.
 
     2b.2 redesign: variables are no longer inserted directly into kefed-model-element;
     they are attached to the subject kefed-model-node via kefed-node-variable.
-    An ooevv-element-set (id = eset-{mid}) is created to house the OOEVV def.
+    The ooevv-element-set is linked via kefed-model-elementset relation
+    (retiring the eset-{mid} naming convention).
 
     variables: list of (role, name, efo_label).
       A 4-tuple (role, name, value_set, efo_label) is also accepted for backward
       compatibility; value_set has no successor in the clean schema and is dropped.
+    definition: optional plain-English definition persisted on the kefed-model.
     State is always 'template'.
     """
     mid = mid or generate_id("kefedm")
     if not _exists(driver, mid):
         ts = get_timestamp()
-        eset_id = f"eset-{mid}"
+        eset_id = generate_id("eset")
         subject_def_id = generate_id("ooevv")
         subject_node_id = generate_id("knode")
+        defn_clause = f', has ooevv-definition "{escape_string(definition)}"' if definition else ""
         w(driver, f'insert $m isa kefed-model, has id "{mid}", has name "{escape_string(name)}", '
-                  f'has kefed-model-state "template", has created-at {ts};')
+                  f'has kefed-model-state "template", has created-at {ts}{defn_clause};')
         classify(driver, mid, experiment_type_term, provenance="kefed experiment-type", confidence=0.9)
         w(driver, f'insert $es isa ooevv-element-set, has id "{eset_id}", '
                   f'has name "{escape_string(name)} elements";')
+        w(driver, f'match $m isa kefed-model, has id "{mid}"; '
+                  f'$es isa ooevv-element-set, has id "{eset_id}"; '
+                  f'insert (model: $m, element-set: $es) isa kefed-model-elementset;')
         w(driver, f'match $es isa ooevv-element-set, has id "{eset_id}"; '
                   f'insert $me isa ooevv-material-entity, has id "{subject_def_id}", '
                   f'has name "{escape_string(name)} entity"; '

@@ -1217,6 +1217,178 @@ def test_t8_load_investigation_iteration_phases(authoring_db, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Task 3a.2: element-set relation authoring + shared-set reuse
+# ---------------------------------------------------------------------------
+
+def test_cmd_add_experiment_elementset_relation(authoring_db, capsys):
+    """cmd_add_experiment links the kefed-model to an ooevv-element-set via
+    kefed-model-elementset relation (not eset-{id} naming convention),
+    and persists definition/long-form on the kefed-model."""
+    import scientific_literature as sl
+
+    w(authoring_db, 'insert $b isa scilit-paper-sensemaking, has id "scsm-eset-a", has name "eset test bundle";')
+    args = types.SimpleNamespace(
+        bundle="scsm-eset-a",
+        name="SIRT3 western blot experiment",
+        definition="An experiment measuring SIRT3 protein levels via western blot.",
+        long_form="SIRT3 protein expression assay",
+        element_set=None,
+    )
+    sl.cmd_add_experiment(args)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_add_experiment failed: {res}"
+    exp_id = res["experiment_id"]
+    eset_id = res["element_set_id"]
+
+    # element-set id must NOT be eset-<exp_id>
+    assert eset_id != f"eset-{exp_id}", "element-set id must not use eset-{id} naming convention"
+
+    # kefed-model is linked to element-set via kefed-model-elementset relation
+    rel_rows = r(authoring_db,
+                 f'match $m isa kefed-model, has id "{exp_id}"; '
+                 f'(model: $m, element-set: $es) isa kefed-model-elementset; '
+                 f'fetch {{"esid": $es.id}};')
+    assert rel_rows, "kefed-model-elementset relation not found"
+    assert rel_rows[0]["esid"] == eset_id
+
+    # kefed-model owns definition and long-form
+    def_rows = r(authoring_db,
+                 f'match $m isa kefed-model, has id "{exp_id}", '
+                 f'has ooevv-definition $d, has ooevv-long-form $lf; '
+                 f'fetch {{"d": $d, "lf": $lf}};')
+    assert def_rows, "kefed-model does not own definition/long-form"
+    assert "SIRT3 protein levels" in def_rows[0]["d"]
+    assert "SIRT3 protein expression" in def_rows[0]["lf"]
+
+
+def test_cmd_ensure_template_elementset_relation(authoring_db, capsys):
+    """cmd_ensure_template creates an element-set linked via kefed-model-elementset
+    relation and persists definition/long-form on the kefed-model."""
+    import scientific_literature as sl
+
+    args = types.SimpleNamespace(
+        name="qPCR expression profiling",
+        definition="A template for quantifying gene expression via qPCR.",
+        long_form="Quantitative polymerase chain reaction expression profiling",
+        element_set=None,
+    )
+    sl.cmd_ensure_template(args)
+    out = capsys.readouterr().out
+    res = json.loads(out)
+    assert res["success"] is True, f"cmd_ensure_template failed: {res}"
+    tpl_id = res["template_id"]
+    assert res["reused"] is False
+
+    # kefed-model-elementset relation exists
+    rel_rows = r(authoring_db,
+                 f'match $t isa kefed-model, has id "{tpl_id}"; '
+                 f'(model: $t, element-set: $es) isa kefed-model-elementset; '
+                 f'fetch {{"esid": $es.id}};')
+    assert rel_rows, "kefed-model-elementset relation not found for template"
+
+    # element-set id must NOT be eset-<tpl_id>
+    assert rel_rows[0]["esid"] != f"eset-{tpl_id}"
+
+    # kefed-model owns definition and long-form
+    def_rows = r(authoring_db,
+                 f'match $t isa kefed-model, has id "{tpl_id}", '
+                 f'has ooevv-definition $d, has ooevv-long-form $lf; '
+                 f'fetch {{"d": $d, "lf": $lf}};')
+    assert def_rows, "kefed-model does not own definition/long-form"
+    assert "qPCR" in def_rows[0]["d"]
+
+
+def test_shared_elementset_def_reuse(authoring_db, capsys):
+    """Model A creates an element-set and a process def in it.
+    Model B shares A's element-set via --element-set.  When model B adds
+    a process with the same type name, the existing def is REUSED (same id)
+    — not duplicated — because both share the element-set."""
+    import scientific_literature as sl
+
+    # Create model A (an experiment) with its own element-set
+    w(authoring_db, 'insert $b isa scilit-paper-sensemaking, has id "scsm-share-a", has name "share bundle A";')
+    args_a = types.SimpleNamespace(
+        bundle="scsm-share-a",
+        name="Model A",
+        definition="Model A definition.",
+        long_form=None,
+        element_set=None,
+    )
+    sl.cmd_add_experiment(args_a)
+    out = capsys.readouterr().out
+    res_a = json.loads(out)
+    assert res_a["success"] is True
+    exp_a_id = res_a["experiment_id"]
+    eset_a_id = res_a["element_set_id"]
+
+    # Add process "western blot" to model A — creates a def in A's element-set
+    args_proc_a = types.SimpleNamespace(
+        experiment=exp_a_id, template=None,
+        name="western blot", type="assay",
+        parent=None,
+        definition="SDS-PAGE western blot for protein detection.",
+        long_form=None,
+    )
+    sl.cmd_add_process(args_proc_a)
+    out = capsys.readouterr().out
+    res_proc_a = json.loads(out)
+    assert res_proc_a["success"] is True
+    proc_def_a_id = res_proc_a["process_def_id"]
+
+    # Create model B (a template), REUSING model A's element-set via --element-set
+    args_b = types.SimpleNamespace(
+        name="Model B",
+        definition="Model B reuses A's element-set.",
+        long_form=None,
+        element_set=eset_a_id,
+    )
+    sl.cmd_ensure_template(args_b)
+    out = capsys.readouterr().out
+    res_b = json.loads(out)
+    assert res_b["success"] is True, f"cmd_ensure_template (model B) failed: {res_b}"
+    tpl_b_id = res_b["template_id"]
+    assert res_b["reused"] is False
+
+    # Verify model B is linked to the SAME element-set as model A
+    b_eset_rows = r(authoring_db,
+                    f'match $m isa kefed-model, has id "{tpl_b_id}"; '
+                    f'(model: $m, element-set: $es) isa kefed-model-elementset; '
+                    f'fetch {{"esid": $es.id}};')
+    assert b_eset_rows, "Model B not linked to any element-set"
+    assert b_eset_rows[0]["esid"] == eset_a_id, (
+        f"Model B linked to {b_eset_rows[0]['esid']!r}, expected {eset_a_id!r}")
+
+    # Add process "western blot" to model B — must REUSE the existing def from shared element-set
+    args_proc_b = types.SimpleNamespace(
+        experiment=None, template=tpl_b_id,
+        name="western blot", type="assay",
+        parent=None,
+        definition="SDS-PAGE western blot for protein detection.",
+        long_form=None,
+    )
+    sl.cmd_add_process(args_proc_b)
+    out = capsys.readouterr().out
+    res_proc_b = json.loads(out)
+    assert res_proc_b["success"] is True
+    proc_def_b_id = res_proc_b["process_def_id"]
+
+    # Same def id — reused from the shared element-set
+    assert proc_def_b_id == proc_def_a_id, (
+        f"Def not reused: model A used {proc_def_a_id!r}, model B used {proc_def_b_id!r}. "
+        "Sharing element-set should have found the existing def.")
+
+    # Only ONE def for 'western blot' in the shared element-set
+    def_rows = r(authoring_db,
+                 f'match $es isa ooevv-element-set, has id "{eset_a_id}"; '
+                 f'(element-set: $es, element: $p) isa ooevv-set-element; '
+                 f'$p isa ooevv-assay, has name "western blot"; '
+                 f'fetch {{"pid": $p.id}};')
+    assert len(def_rows) == 1, f"Expected 1 def for 'western blot', found {len(def_rows)}: {def_rows}"
+    assert def_rows[0]["pid"] == proc_def_a_id
+
+
+# ---------------------------------------------------------------------------
 # Task 9: Retired-type guard (pure-logic, no DB)
 # ---------------------------------------------------------------------------
 

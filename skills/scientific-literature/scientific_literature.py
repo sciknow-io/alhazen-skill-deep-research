@@ -3669,24 +3669,67 @@ def cmd_ensure_entity(args):
     print(json.dumps({"success": True, "entity_id": eid, "reused": False}))
 
 
+def _model_elementset(tx, model_id, model_name=""):
+    """Within a WRITE transaction: return the element-set id linked to model_id via
+    kefed-model-elementset, creating and linking a fresh ooevv-element-set if absent."""
+    rows = list(tx.query(
+        f'match $m isa kefed-model, has id "{escape_string(model_id)}"; '
+        f'(model: $m, element-set: $es) isa kefed-model-elementset; '
+        f'fetch {{"esid": $es.id}};').resolve())
+    if rows:
+        return rows[0]["esid"]
+    eset_id = generate_id("eset")
+    label = escape_string(model_name or model_id)
+    tx.query(
+        f'match $m isa kefed-model, has id "{escape_string(model_id)}"; '
+        f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+        f'has name "{label} elements"; '
+        f'(model: $m, element-set: $es) isa kefed-model-elementset;').resolve()
+    return eset_id
+
+
 def cmd_add_experiment(args):
     """Create one experiment (kefed-model + ooevv-element-set) under a paper's sensemaking bundle.
-    A paper may have several separate experiments. The element-set (id = eset-<exp_id>) houses
-    the OOEVV process/entity definitions used by cmd_add_process / cmd_add_entity_node."""
+    A paper may have several separate experiments.  The element-set houses the OOEVV
+    process/entity definitions used by cmd_add_process / cmd_add_entity_node and is linked
+    via the kefed-model-elementset relation (retiring the eset-{model_id} naming convention).
+    --element-set <id> reuses an existing element-set (shared across models)."""
     exp_id = generate_id("scexp")
-    eset_id = f"eset-{exp_id}"
     ts = get_timestamp()
+    defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+    lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+    existing_eset = getattr(args, "element_set", None)
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             b = list(tx.query(f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
                               f'fetch {{ "id": $b.id }};').resolve())
             if not b:
                 print(json.dumps({"success": False, "error": "Bundle not found"})); sys.exit(1)
+            if existing_eset:
+                es_check = list(tx.query(
+                    f'match $es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'fetch {{ "id": $es.id }};').resolve())
+                if not es_check:
+                    print(json.dumps({"success": False, "error": f"element-set {existing_eset!r} not found"}))
+                    sys.exit(1)
             tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'insert $m isa kefed-model, has id "{exp_id}", has name "{escape_string(args.name)}", has created-at {ts}; '
-                f'$es isa ooevv-element-set, has id "{eset_id}", has name "{escape_string(args.name)} elements"; '
+                f'insert $m isa kefed-model, has id "{exp_id}", has name "{escape_string(args.name)}", '
+                f'has created-at {ts}{defn}{lf}; '
                 f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment;').resolve()
+            if existing_eset:
+                eset_id = existing_eset
+                tx.query(
+                    f'match $m isa kefed-model, has id "{exp_id}"; '
+                    f'$es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'insert (model: $m, element-set: $es) isa kefed-model-elementset;').resolve()
+            else:
+                eset_id = generate_id("eset")
+                tx.query(
+                    f'match $m isa kefed-model, has id "{exp_id}"; '
+                    f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+                    f'has name "{escape_string(args.name)} elements"; '
+                    f'(model: $m, element-set: $es) isa kefed-model-elementset;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "experiment_id": exp_id, "element_set_id": eset_id, "bundle": args.bundle}))
 
@@ -3704,7 +3747,6 @@ def cmd_add_process(args):
     cid = getattr(args, "template", None) or getattr(args, "experiment", None)
     if not cid:
         print(json.dumps({"success": False, "error": "Provide --template or --experiment"})); sys.exit(1)
-    eset_id = f"eset-{cid}"
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
     lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
     ts = get_timestamp()
@@ -3717,12 +3759,8 @@ def cmd_add_process(args):
                               f'fetch {{ "id": $m.id }};').resolve())
             if not m:
                 print(json.dumps({"success": False, "error": "kefed-model not found"})); sys.exit(1)
-            # Ensure element-set exists (created lazily for templates; cmd_add_experiment pre-creates it)
-            es = list(tx.query(f'match $es isa ooevv-element-set, has id "{eset_id}"; '
-                               f'fetch {{ "id": $es.id }};').resolve())
-            if not es:
-                tx.query(f'insert $es isa ooevv-element-set, has id "{eset_id}", '
-                         f'has name "{escape_string(cid)} elements";').resolve()
+            # Resolve element-set via kefed-model-elementset relation (creating+linking if absent)
+            eset_id = _model_elementset(tx, cid, getattr(args, "name", ""))
             # Find or create OOEVV process def by name in the element-set
             pd = list(tx.query(
                 f'match $es isa ooevv-element-set, has id "{eset_id}"; '
@@ -3772,7 +3810,6 @@ def cmd_add_entity_node(args):
     cid = getattr(args, "template", None) or getattr(args, "experiment", None)
     if not cid:
         print(json.dumps({"success": False, "error": "Provide --template or --experiment"})); sys.exit(1)
-    eset_id = f"eset-{cid}"
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
     ts = get_timestamp()
     node_id = generate_id("knode")
@@ -3784,12 +3821,8 @@ def cmd_add_entity_node(args):
                               f'fetch {{ "id": $m.id }};').resolve())
             if not m:
                 print(json.dumps({"success": False, "error": "kefed-model not found"})); sys.exit(1)
-            # Ensure element-set
-            es = list(tx.query(f'match $es isa ooevv-element-set, has id "{eset_id}"; '
-                               f'fetch {{ "id": $es.id }};').resolve())
-            if not es:
-                tx.query(f'insert $es isa ooevv-element-set, has id "{eset_id}", '
-                         f'has name "{escape_string(cid)} elements";').resolve()
+            # Resolve element-set via kefed-model-elementset relation (creating+linking if absent)
+            eset_id = _model_elementset(tx, cid, getattr(args, "name", ""))
             # Find or create ooevv-material-entity def by name
             ed = list(tx.query(
                 f'match $es isa ooevv-element-set, has id "{eset_id}"; '
@@ -3944,9 +3977,9 @@ def cmd_bind_parameter(args):
 
 def cmd_ensure_template(args):
     """Find-or-create a reusable experiment-design template:
-    a kefed-model with kefed-model-state 'template'.
-    Note: kefed-model is sub alh-artifact and does not own ooevv-definition/long-form;
-    those attributes live on the OOEVV element-set or process/variable elements, not the model."""
+    a kefed-model with kefed-model-state 'template', linked to an ooevv-element-set via
+    kefed-model-elementset.  --definition/--long-form are persisted on the kefed-model.
+    --element-set <id> reuses an existing element-set (shared across models)."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             ex = list(tx.query(
@@ -3957,10 +3990,32 @@ def cmd_ensure_template(args):
             print(json.dumps({"success": True, "template_id": ex[0]["id"], "reused": True}))
             return
         tid = generate_id("sctpl"); ts = get_timestamp()
+        defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+        lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+        existing_eset = getattr(args, "element_set", None)
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            if existing_eset:
+                es_check = list(tx.query(
+                    f'match $es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'fetch {{ "id": $es.id }};').resolve())
+                if not es_check:
+                    print(json.dumps({"success": False, "error": f"element-set {existing_eset!r} not found"}))
+                    sys.exit(1)
             tx.query(
                 f'insert $t isa kefed-model, has id "{tid}", has name "{escape_string(args.name)}", '
-                f'has kefed-model-state "template", has created-at {ts};').resolve()
+                f'has kefed-model-state "template", has created-at {ts}{defn}{lf};').resolve()
+            if existing_eset:
+                tx.query(
+                    f'match $t isa kefed-model, has id "{tid}"; '
+                    f'$es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'insert (model: $t, element-set: $es) isa kefed-model-elementset;').resolve()
+            else:
+                eset_id = generate_id("eset")
+                tx.query(
+                    f'match $t isa kefed-model, has id "{tid}"; '
+                    f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+                    f'has name "{escape_string(args.name)} elements"; '
+                    f'(model: $t, element-set: $es) isa kefed-model-elementset;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "template_id": tid, "reused": False}))
 
@@ -4560,6 +4615,9 @@ def main():
     p = subparsers.add_parser("add-experiment", help="Create one experiment (element-set) under a bundle")
     p.add_argument("--bundle", required=True, help="Bundle id (scsense-...)")
     p.add_argument("--name", required=True, help="Experiment label (e.g. 'Fig 1: SIRT3 expression')")
+    p.add_argument("--definition", help="Curated definition of the experiment (undergraduate-level)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated experiment name")
+    p.add_argument("--element-set", dest="element_set", help="Reuse an existing ooevv-element-set id")
 
     p = subparsers.add_parser("add-process", help="Add a protocol step to an experiment OR template (hierarchical via --parent)")
     p.add_argument("--experiment", help="Experiment id (scexp-...)")
@@ -4618,6 +4676,7 @@ def main():
     p.add_argument("--name", required=True, help="Template name (e.g. 'qPCR expression profiling')")
     p.add_argument("--definition", help="Curated definition of the design (undergraduate-level: what the assay measures + how)")
     p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated template name")
+    p.add_argument("--element-set", dest="element_set", help="Reuse an existing ooevv-element-set id")
 
     p = subparsers.add_parser("list-templates", help="RECOGNITION/gap-check: list reusable templates (+ counts)")
     p.add_argument("--match", help="Case-insensitive substring filter on name/definition")
