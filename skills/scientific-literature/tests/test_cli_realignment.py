@@ -1242,6 +1242,11 @@ def test_no_retired_types_in_cli():
       - ooevv-set-process, ooevv-set-entity
       - scilit-reported-claim, scilit-reported-gap
       - kefed-value-set, scilit-iteration-number, scilit-investigation-phasing
+      # kefed-model-node graph redesign (2b.1): retired bigraph relations
+      - ooevv-parameter-binding, ooevv-produced-by
+      # renamed bigraph roles (*-entity/*-process -> *-node)
+      - subject-entity, input-entity, consuming-process, producing-process
+      - output-entity, binding-bearer, bound-parameter, produced-variable
     """
     import re
     from pathlib import Path
@@ -1265,6 +1270,18 @@ def test_no_retired_types_in_cli():
         "kefed-value-set",
         "scilit-iteration-number",
         "scilit-investigation-phasing",
+        # Retired in kefed-model-node graph redesign (2b.1): bigraph relations
+        "ooevv-parameter-binding",
+        "ooevv-produced-by",
+        # Retired bigraph role names (renamed to *-node forms)
+        "subject-entity",
+        "input-entity",
+        "consuming-process",
+        "producing-process",
+        "output-entity",
+        "binding-bearer",
+        "bound-parameter",
+        "produced-variable",
     ]
 
     def live_text(path: Path) -> str:
