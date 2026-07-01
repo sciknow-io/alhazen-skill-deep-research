@@ -404,7 +404,7 @@ def test_cmd_add_reported_gap_inserts_scilit_gap(authoring_db, capsys):
 
 def test_cmd_add_datum_uses_ooevv_variable(authoring_db, capsys):
     """cmd_add_datum must link cells to ooevv-variable (not the retired kefed-variable).
-    The ooevv-cell relation must be inserted when a valid ooevv-variable id is given."""
+    The kefed-cell relation must be inserted when a valid ooevv-variable id is given."""
     import scientific_literature as sl
 
     # Insert prerequisite: kefed-instance + ooevv-variable
@@ -428,13 +428,13 @@ def test_cmd_add_datum_uses_ooevv_variable(authoring_db, capsys):
     datum_id = result["datum_id"]
     assert result["cells"] == 1
 
-    # ooevv-cell must link the datum to the ooevv-variable
+    # kefed-cell must link the datum to the ooevv-variable
     cell_rows = r(authoring_db,
-                  f'match $d isa ooevv-datum, has id "{datum_id}"; '
+                  f'match $d isa kefed-row, has id "{datum_id}"; '
                   f'$v isa ooevv-variable, has id "oov-datum-t3"; '
-                  f'(datum: $d, cell-variable: $v) isa ooevv-cell; '
+                  f'(datum: $d, cell-variable: $v) isa kefed-cell; '
                   f'fetch {{"did": $d.id, "vid": $v.id}};')
-    assert cell_rows, f"ooevv-cell not found linking datum {datum_id!r} to variable 'oov-datum-t3'"
+    assert cell_rows, f"kefed-cell not found linking datum {datum_id!r} to variable 'oov-datum-t3'"
     assert cell_rows[0]["did"] == datum_id
     assert cell_rows[0]["vid"] == "oov-datum-t3"
 
@@ -447,7 +447,7 @@ def test_cmd_add_datum_uses_ooevv_variable(authoring_db, capsys):
 #                       -> produced-variable/producing-process (was produced-measurement/terminal-process)
 #   cmd_bind_parameter  -> binding-bearer (was binding-process)
 #   cmd_ensure_template -> kefed-model + kefed-model-state "template" (was kefed-template type)
-#   cmd_instantiate_template -> scilit-sensemaking-experiment + ooevv-instance-of:model (was template role)
+#   cmd_instantiate_template -> scilit-sensemaking-experiment + kefed-instance-of:model (was template role)
 #   DELETE: cmd_add_slot, cmd_param_slot, cmd_bind_slot
 # ---------------------------------------------------------------------------
 
@@ -612,7 +612,7 @@ def test_t4_ensure_template_uses_kefed_model_state(authoring_db, capsys):
 
 def test_t4_instantiate_template_uses_sensemaking_experiment(authoring_db, capsys):
     """cmd_instantiate_template must attach instance via scilit-sensemaking-experiment
-    and use ooevv-instance-of with model role (not template role)."""
+    and use kefed-instance-of with model role (not template role)."""
     import scientific_literature as sl
 
     w(authoring_db,
@@ -633,13 +633,13 @@ def test_t4_instantiate_template_uses_sensemaking_experiment(authoring_db, capsy
     assert res["success"] is True, f"cmd_instantiate_template failed: {res}"
     inst_id = res["instance_id"]
 
-    # ooevv-instance-of with model role (not template)
+    # kefed-instance-of with model role (not template)
     rows = r(authoring_db,
              f'match $i isa kefed-instance, has id "{inst_id}"; '
              f'$m isa kefed-model, has id "kefedm-t4-tpl"; '
-             f'(instance: $i, model: $m) isa ooevv-instance-of; '
+             f'(instance: $i, model: $m) isa kefed-instance-of; '
              f'fetch {{"iid": $i.id}};')
-    assert rows, "ooevv-instance-of with model role not found"
+    assert rows, "kefed-instance-of with model role not found"
     assert rows[0]["iid"] == inst_id
 
     # scilit-sensemaking-experiment must link bundle to instance (not ooevv-bundle-experiment)
@@ -1520,8 +1520,8 @@ def test_data_signature_traversal(authoring_db, capsys):
 def test_add_datum_validation_against_model(authoring_db, capsys):
     """cmd_add_datum validates --cells variable ids against the instance's model.
 
-    Case (a): instance WITHOUT ooevv-instance-of -> validation skipped (backward compat).
-    Case (b): instance WITH ooevv-instance-of ->
+    Case (a): instance WITHOUT kefed-instance-of -> validation skipped (backward compat).
+    Case (b): instance WITH kefed-instance-of ->
         - unknown variable id -> success=false, error contains variable id
         - valid model variable id -> success=true
     """
@@ -1544,7 +1544,7 @@ def test_add_datum_validation_against_model(authoring_db, capsys):
     result = json.loads(out)
     assert result["success"] is True, f"No-model instance should skip validation: {result}"
 
-    # === Case (b): instance WITH ooevv-instance-of ===
+    # === Case (b): instance WITH kefed-instance-of ===
 
     # Build minimal model (experiment) with one process node + one measurement variable
     w(authoring_db,
@@ -1583,7 +1583,7 @@ def test_add_datum_validation_against_model(authoring_db, capsys):
     sl.cmd_add_variable(args_meas_v)
     model_var_id = json.loads(capsys.readouterr().out)["variable_id"]
 
-    # Create an instance linked to the model via ooevv-instance-of
+    # Create an instance linked to the model via kefed-instance-of
     args_inst = types.SimpleNamespace(
         bundle="scsm-valtest-1",
         template=model_id,

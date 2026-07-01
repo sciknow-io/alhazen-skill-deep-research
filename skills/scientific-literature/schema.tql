@@ -905,40 +905,40 @@ entity kefed-model-node sub alh-domain-thing,
 # --- attributes ---
 attribute kefed-model-state, value string; # template (no values bound) | instantiated
 attribute scilit-warrant, value string;    # what the instance's data licenses (derived from index sets)
-attribute ooevv-cell-value, value string;  # the value a variable took in a data row (independent or measured)
-attribute ooevv-cell-number, value double; # numeric form of the cell value (for aggregation), optional
+attribute kefed-cell-value, value string;  # the value a variable took in a data row (independent or measured)
+attribute kefed-cell-number, value double; # numeric form of the cell value (for aggregation), optional
 
 # --- additive owns on kefed-model ---
 entity kefed-model owns kefed-model-state;
 
 # --- relations (instance layer) ---
-relation ooevv-instance-of,                # an instance is an execution of a model (model-state: template)
+relation kefed-instance-of,                # an instance is an execution of a model (model-state: template)
     relates instance, relates model;
-relation ooevv-instance-datum,             # an instance groups its data rows
+relation kefed-instance-datum,             # an instance groups its data rows
     relates instance, relates datum;
-relation ooevv-cell,                       # one cell = the value a variable took in a datum row
+relation kefed-cell,                       # one cell = the value a variable took in a datum row
     relates datum, relates cell-variable,
-    owns ooevv-cell-value, owns ooevv-cell-number;
-relation ooevv-datum-observation,          # a data row links to its free-text observation (provenance)
+    owns kefed-cell-value, owns kefed-cell-number;
+relation kefed-datum-observation,          # a data row links to its free-text observation (provenance)
     relates datum, relates observation;
 
 # INSTANCE - one paper's execution of a model; carries data rows + warrant.
 entity kefed-instance sub alh-artifact,
     owns scilit-warrant,
-    plays ooevv-instance-of:instance,
-    plays ooevv-instance-datum:instance;
+    plays kefed-instance-of:instance,
+    plays kefed-instance-datum:instance;
 
 # DATUM - one data row; cells hold per-variable values; links to its provenance observation.
-entity ooevv-datum sub alh-domain-thing,
-    plays ooevv-instance-datum:datum,
-    plays ooevv-cell:datum,
-    plays ooevv-datum-observation:datum;
+entity kefed-row sub alh-domain-thing,
+    plays kefed-instance-datum:datum,
+    plays kefed-cell:datum,
+    plays kefed-datum-observation:datum;
 
 # --- additive plays on existing types ---
-entity kefed-model plays ooevv-instance-of:model;
-entity ooevv-variable plays ooevv-cell:cell-variable;
+entity kefed-model plays kefed-instance-of:model;
+entity ooevv-variable plays kefed-cell:cell-variable;
 # the free-text observation a data row links to for provenance/coexistence
-entity scilit-observation plays ooevv-datum-observation:observation;
+entity scilit-observation plays kefed-datum-observation:observation;
 
 
 # =============================================================================

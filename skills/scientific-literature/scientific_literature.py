@@ -2705,31 +2705,31 @@ def _load_instance(tx, instance_id):
     if not head:
         return None
     inst = {k: v for k, v in head[0].items() if v is not None}
-    # template ref: ooevv-instance-of role renamed template -> model (Task 8)
+    # template ref: kefed-instance-of role renamed template -> model (Task 8)
     tpl = list(tx.query(
         f'match $i isa kefed-instance, has id "{esc}"; '
-        f'(instance: $i, model: $t) isa ooevv-instance-of; '
+        f'(instance: $i, model: $t) isa kefed-instance-of; '
         f'fetch {{ "id": $t.id, "name": $t.name }};').resolve())
     inst["template"] = ({k: v for k, v in tpl[0].items() if v is not None} if tpl else None)
-    # data rows (ooevv-instance-datum / ooevv-cell / ooevv-datum-observation unchanged)
+    # data rows (kefed-instance-datum / kefed-cell / kefed-datum-observation unchanged)
     datum_rows = list(tx.query(
         f'match $i isa kefed-instance, has id "{esc}"; '
-        f'(instance: $i, datum: $d) isa ooevv-instance-datum; '
+        f'(instance: $i, datum: $d) isa kefed-instance-datum; '
         f'fetch {{ "id": $d.id }};').resolve())
     data = []
     for dr in datum_rows:
         did = dr["id"]; de = escape_string(did)
         # cell variable role: kefed-variable-role -> ooevv-variable-role (Task 8)
         cells = list(tx.query(
-            f'match $d isa ooevv-datum, has id "{de}"; '
-            f'$c isa ooevv-cell, links (datum: $d, cell-variable: $v), has ooevv-cell-value $val; '
+            f'match $d isa kefed-row, has id "{de}"; '
+            f'$c isa kefed-cell, links (datum: $d, cell-variable: $v), has kefed-cell-value $val; '
             f'$v has name $vn, has ooevv-variable-role $vr; '
             f'fetch {{ "variable": $v.id, "name": $vn, "role": $vr, "value": $val, '
-            f'"number": $c.ooevv-cell-number }};').resolve())
+            f'"number": $c.kefed-cell-number }};').resolve())
         row = {"id": did, "cells": [{k: v for k, v in c.items() if v is not None} for c in cells]}
         obs = list(tx.query(
-            f'match $d isa ooevv-datum, has id "{de}"; '
-            f'(datum: $d, observation: $o) isa ooevv-datum-observation; '
+            f'match $d isa kefed-row, has id "{de}"; '
+            f'(datum: $d, observation: $o) isa kefed-datum-observation; '
             f'fetch {{ "id": $o.id, "name": $o.name, "content": $o.content }};').resolve())
         if obs:
             row["observation"] = {k: v for k, v in obs[0].items() if v is not None}
@@ -4176,7 +4176,7 @@ def cmd_list_templates(args):
                     f'(node: $n, variable: $v) isa kefed-node-variable; select $v;').resolve())
                 tp["instance_count"] = sum(1 for _ in tx.query(
                     f'match $t isa kefed-model, has id "{e}"; '
-                    f'(instance: $i, model: $t) isa ooevv-instance-of; select $i;').resolve())
+                    f'(instance: $i, model: $t) isa kefed-instance-of; select $i;').resolve())
     print(json.dumps({"success": True, "count": len(tpls), "templates": tpls}, indent=2))
 
 
@@ -4271,7 +4271,7 @@ def cmd_instantiate_template(args):
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
                 f'$m isa kefed-model, has id "{escape_string(args.template)}"; '
                 f'insert $i isa kefed-instance, has id "{iid}", has name "{escape_string(name)}", has created-at {ts}; '
-                f'(instance: $i, model: $m) isa ooevv-instance-of; '
+                f'(instance: $i, model: $m) isa kefed-instance-of; '
                 f'(sensemaking: $b, experiment: $i) isa scilit-sensemaking-experiment;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "instance_id": iid, "bundle": args.bundle, "template": args.template}))
@@ -4292,11 +4292,11 @@ def cmd_add_datum(args):
                                  f'fetch {{ "id": $i.id }};').resolve())
             if not inst:
                 print(json.dumps({"success": False, "error": "Instance not found"})); sys.exit(1)
-            # Validate cell variable ids against the model (if instance has one via ooevv-instance-of).
+            # Validate cell variable ids against the model (if instance has one via kefed-instance-of).
             # If no model is linked, skip validation for backward compatibility.
             model_rows = list(tx.query(
                 f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
-                f'(instance: $i, model: $m) isa ooevv-instance-of; '
+                f'(instance: $i, model: $m) isa kefed-instance-of; '
                 f'fetch {{ "mid": $m.id }};').resolve())
             if model_rows:
                 mid = escape_string(model_rows[0]["mid"])
@@ -4315,18 +4315,18 @@ def cmd_add_datum(args):
             did = generate_id("scdatum"); ts = get_timestamp()
             tx.query(
                 f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
-                f'insert $d isa ooevv-datum, has id "{did}", has created-at {ts}; '
-                f'(instance: $i, datum: $d) isa ooevv-instance-datum;').resolve()
+                f'insert $d isa kefed-row, has id "{did}", has created-at {ts}; '
+                f'(instance: $i, datum: $d) isa kefed-instance-datum;').resolve()
             for c in cells:
                 vid = escape_string(str(c["variable"]))
                 val = escape_string(str(c.get("value", "")))
                 num = c.get("number", None)
-                numclause = f', has ooevv-cell-number {float(num)}' if num is not None else ""
+                numclause = f', has kefed-cell-number {float(num)}' if num is not None else ""
                 tx.query(
-                    f'match $d isa ooevv-datum, has id "{did}"; '
+                    f'match $d isa kefed-row, has id "{did}"; '
                     f'$v isa ooevv-variable, has id "{vid}"; '
-                    f'insert (datum: $d, cell-variable: $v) isa ooevv-cell, '
-                    f'has ooevv-cell-value "{val}"{numclause};').resolve()
+                    f'insert (datum: $d, cell-variable: $v) isa kefed-cell, '
+                    f'has kefed-cell-value "{val}"{numclause};').resolve()
             obs_id = getattr(args, "observation", None)
             if not obs_id and getattr(args, "gloss", None):
                 obs_id = generate_id("scobs")
@@ -4338,9 +4338,9 @@ def cmd_add_datum(args):
                     f'has scilit-knowledge-level "{kl}", has scilit-bio-scale "{bs}", has created-at {ts};').resolve()
             if obs_id:
                 tx.query(
-                    f'match $d isa ooevv-datum, has id "{did}"; '
+                    f'match $d isa kefed-row, has id "{did}"; '
                     f'$o isa scilit-observation, has id "{escape_string(obs_id)}"; '
-                    f'insert (datum: $d, observation: $o) isa ooevv-datum-observation;').resolve()
+                    f'insert (datum: $d, observation: $o) isa kefed-datum-observation;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "datum_id": did, "instance": args.instance,
                       "cells": len(cells), "observation": obs_id}))
