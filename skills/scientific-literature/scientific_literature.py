@@ -2228,7 +2228,7 @@ def _load_investigation(tx, inv_id):
         f'"status": $inv.scilit-investigation-status, '
         f'"question": $inv.scilit-investigation-question, '
         f'"type": $inv.scilit-investigation-type, '
-        f'"iteration": $inv.scilit-iteration-number, "created-at": $inv.created-at }};'
+        f'"created-at": $inv.created-at }};'
     ).resolve())
     if not result:
         return None
@@ -2275,15 +2275,24 @@ def _load_investigation(tx, inv_id):
         investigation["collection"] = {"id": coll["id"], "name": coll.get("name"),
                                        "count": len(papers)}
 
-    # Stage notes (iteration-aware). Each carries its scilit-phase + iteration-number.
+    # Stage notes: traverse iteration->stage chain (replaces retired scilit-investigation-phasing).
+    # Path: investigation -> scilit-investigation-iteration -> scilit-iteration (index) ->
+    #       scilit-iteration-stage -> scilit-investigation-phase.
+    # Each phase dict carries 'iteration' from scilit-iteration-index.
     phase_rows = list(tx.query(
         f'match $inv isa scilit-investigation, has id "{esc}"; '
-        f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
-        f'$ph has scilit-phase $phase; '
-        f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, "phase": $phase, '
-        f'"iteration": $ph.scilit-iteration-number, "created-at": $ph.created-at }};'
+        f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+        f'$it isa scilit-iteration, has scilit-iteration-index $idx; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+        f'$ph isa scilit-investigation-phase, has scilit-phase $phase; '
+        f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, '
+        f'"phase": $phase, "idx": $idx, "created-at": $ph.created-at }};'
     ).resolve())
-    phases = [{k: v for k, v in r.items() if v is not None} for r in phase_rows]
+    phases = []
+    for r in phase_rows:
+        ph = {k: v for k, v in r.items() if v is not None and k != "idx"}
+        ph["iteration"] = r.get("idx")
+        phases.append(ph)
     for ph in phases:
         if ph.get("phase") == "analysis":
             fn = list(tx.query(
@@ -2482,10 +2491,9 @@ def _var_brief(tx, var_id):
     return v
 
 
-def _load_experiment(tx, exp_id, container_type="kefed-model"):
+def _load_experiment(tx, exp_id):
     """Full protocol graph for one kefed-model: processes (with hierarchy, input/output
-    entities, bound parameters, produced measurements). container_type kept for call-site
-    compatibility but collapsed to kefed-model (template is now a state, not a type)."""
+    entities, bound parameters, produced measurements)."""
     esc = escape_string(exp_id)
     # ooevv-set-process(container,contained-process) retired -> kefed-model-element(model,element)
     # filter element to ooevv-process subtypes (excludes variables/entities in the bigraph)
@@ -2538,27 +2546,23 @@ def cmd_show_experiment(args):
 
 
 def _load_template(tx, template_id):
-    """Full reusable design: name, definition, declared slots, and the protocol graph
-    (processes + variable definitions) shared by every instance."""
+    """Full reusable design: name and the protocol graph (processes + variable definitions)
+    shared by every instance. Template is a kefed-model with kefed-model-state 'template'.
+    Retired: kefed-template type, kefed-template-slot, kefed-slot-role/kind (Task 8, Jun 2026)."""
     esc = escape_string(template_id)
-    head = list(tx.query(f'match $t isa kefed-template, has id "{esc}"; '
-                         f'fetch {{ "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition, '
-                         f'"long_form": $t.ooevv-long-form }};').resolve())
+    head = list(tx.query(
+        f'match $t isa kefed-model, has id "{esc}", has kefed-model-state "template"; '
+        f'fetch {{ "id": $t.id, "name": $t.name }};').resolve())
     if not head:
         return None
     tpl = {k: v for k, v in head[0].items() if v is not None}
-    slot_rows = list(tx.query(
-        f'match $t isa kefed-template, has id "{esc}"; '
-        f'(template: $t, slot: $sl) isa kefed-template-slot; '
-        f'fetch {{ "id": $sl.id, "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind, '
-        f'"definition": $sl.ooevv-definition, "long_form": $sl.ooevv-long-form }};').resolve())
-    tpl["slots"] = [{k: v for k, v in r.items() if v is not None} for r in slot_rows]
+    # variables via kefed-model-element (replaces retired kefed-element/kefed-template-slot)
     var_rows = list(tx.query(
-        f'match $t isa kefed-template, has id "{esc}"; '
-        f'(model: $t, variable: $v) isa kefed-element; '
+        f'match $t isa kefed-model, has id "{esc}"; '
+        f'(model: $t, element: $v) isa kefed-model-element; $v isa ooevv-variable; '
         f'fetch {{ "id": $v.id }};').resolve())
     tpl["variables"] = [_var_brief(tx, r["id"]) for r in var_rows]
-    tpl["graph"] = _load_experiment(tx, template_id, container_type="kefed-template")
+    tpl["graph"] = _load_experiment(tx, template_id)
     return tpl
 
 
@@ -2573,29 +2577,22 @@ def cmd_show_template(args):
 
 
 def _load_instance(tx, instance_id):
-    """One paper's execution of a template: the template ref, slot bindings (slot -> filler entity),
-    and the data rows (cells: per-variable values) each linked to its provenance observation."""
+    """One paper's execution of a template: the template ref (via kefed-model role) and the
+    data rows (cells: per-variable values) each linked to its provenance observation.
+    Retired: ooevv-slot-binding, kefed-slot-role/kind, kefed-variable-role (Task 8, Jun 2026)."""
     esc = escape_string(instance_id)
     head = list(tx.query(f'match $i isa kefed-instance, has id "{esc}"; '
                          f'fetch {{ "id": $i.id, "name": $i.name }};').resolve())
     if not head:
         return None
     inst = {k: v for k, v in head[0].items() if v is not None}
+    # template ref: ooevv-instance-of role renamed template -> model (Task 8)
     tpl = list(tx.query(
         f'match $i isa kefed-instance, has id "{esc}"; '
-        f'(instance: $i, template: $t) isa ooevv-instance-of; '
+        f'(instance: $i, model: $t) isa ooevv-instance-of; '
         f'fetch {{ "id": $t.id, "name": $t.name }};').resolve())
     inst["template"] = ({k: v for k, v in tpl[0].items() if v is not None} if tpl else None)
-    # slot bindings: slot (role/kind) -> filler entity
-    bind_rows = list(tx.query(
-        f'match $i isa kefed-instance, has id "{esc}"; '
-        f'$r isa ooevv-slot-binding, links (instance: $i, slot: $sl, filler: $e); '
-        f'$sl has kefed-slot-role $role; $e has name $en; '
-        f'fetch {{ "slot": $sl.id, "role": $role, "kind": $sl.kefed-slot-kind, '
-        f'"entity_id": $e.id, "entity": $en, '
-        f'"entity_long_form": $e.ooevv-long-form, "entity_definition": $e.ooevv-definition }};').resolve())
-    inst["bindings"] = [{k: v for k, v in r.items() if v is not None} for r in bind_rows]
-    # data rows
+    # data rows (ooevv-instance-datum / ooevv-cell / ooevv-datum-observation unchanged)
     datum_rows = list(tx.query(
         f'match $i isa kefed-instance, has id "{esc}"; '
         f'(instance: $i, datum: $d) isa ooevv-instance-datum; '
@@ -2603,10 +2600,11 @@ def _load_instance(tx, instance_id):
     data = []
     for dr in datum_rows:
         did = dr["id"]; de = escape_string(did)
+        # cell variable role: kefed-variable-role -> ooevv-variable-role (Task 8)
         cells = list(tx.query(
             f'match $d isa ooevv-datum, has id "{de}"; '
             f'$c isa ooevv-cell, links (datum: $d, cell-variable: $v), has ooevv-cell-value $val; '
-            f'$v has name $vn, has kefed-variable-role $vr; '
+            f'$v has name $vn, has ooevv-variable-role $vr; '
             f'fetch {{ "variable": $v.id, "name": $vn, "role": $vr, "value": $val, '
             f'"number": $c.ooevv-cell-number }};').resolve())
         row = {"id": did, "cells": [{k: v for k, v in c.items() if v is not None} for c in cells]}
@@ -2659,7 +2657,7 @@ def _load_synthesized_claims(tx, inv_id):
             inst = list(tx.query(
                 f'match $e isa scilit-evidence, has id "{escape_string(w["id"])}"; '
                 f'(evidence: $e, grounding-instance: $i) isa scilit-evidence-instance; '
-                f'(bundle: $b, experiment: $i) isa ooevv-bundle-experiment; '
+                f'(sensemaking: $b, experiment: $i) isa scilit-sensemaking-experiment; '
                 f'(sensemaking: $b, paper: $p) isa scilit-sensemaking-paper; '
                 f'fetch {{ "id": $i.id, "name": $i.name, "bundle": $b.id, "paper": $p.name }};').resolve())
             w["grounding_instances"] = [{k: v for k, v in g.items() if v is not None} for g in inst]
@@ -3843,25 +3841,27 @@ def _match_filter(rows, term, *fields):
 
 def cmd_list_templates(args):
     """RECOGNITION / gap-check: list reusable templates (optionally --match a name substring)
-    with slot/process/variable counts, so curation can decide reuse-vs-create."""
+    with process/variable/instance counts, so curation can decide reuse-vs-create.
+    Template = kefed-model with kefed-model-state 'template'.
+    Retired: kefed-template type, slot counts, kefed-element (Task 8, Jun 2026)."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             rows = list(tx.query(
-                'match $t isa kefed-template; '
-                'fetch { "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition, "long_form": $t.ooevv-long-form };').resolve())
+                'match $t isa kefed-model, has kefed-model-state "template"; '
+                'fetch { "id": $t.id, "name": $t.name };').resolve())
             tpls = _match_filter([{k: v for k, v in r.items() if v is not None} for r in rows],
-                                 getattr(args, "match", None), "name", "definition")
+                                 getattr(args, "match", None), "name")
             for tp in tpls:
                 e = escape_string(tp["id"])
-                tp["slots"] = [{k: v for k, v in r.items() if v is not None} for r in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (template: $t, slot: $sl) isa kefed-template-slot; '
-                    f'fetch {{ "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind }};').resolve()]
                 tp["process_count"] = sum(1 for _ in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (container: $t, contained-process: $p) isa ooevv-set-process; select $p;').resolve())
+                    f'match $t isa kefed-model, has id "{e}"; '
+                    f'(model: $t, element: $p) isa kefed-model-element; $p isa ooevv-process; select $p;').resolve())
                 tp["variable_count"] = sum(1 for _ in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (model: $t, variable: $v) isa kefed-element; select $v;').resolve())
+                    f'match $t isa kefed-model, has id "{e}"; '
+                    f'(model: $t, element: $v) isa kefed-model-element; $v isa ooevv-variable; select $v;').resolve())
                 tp["instance_count"] = sum(1 for _ in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (instance: $i, template: $t) isa ooevv-instance-of; select $i;').resolve())
+                    f'match $t isa kefed-model, has id "{e}"; '
+                    f'(instance: $i, model: $t) isa ooevv-instance-of; select $i;').resolve())
     print(json.dumps({"success": True, "count": len(tpls), "templates": tpls}, indent=2))
 
 
@@ -3906,9 +3906,9 @@ def cmd_audit_terms(args):
     definition, definitions that are too short, and names with an abbreviation but no
     long-form. Read-only; fix flagged items by re-authoring with --definition/--long-form."""
     import re
+    # kefed-variable -> ooevv-variable; kefed-template + kefed-slot retired (Task 8, Jun 2026)
     TYPES = [("ooevv-quality", "quality"), ("scilit-entity", "entity"),
-             ("ooevv-process", "process"), ("kefed-variable", "variable"),
-             ("kefed-template", "template"), ("kefed-slot", "slot")]
+             ("ooevv-process", "process"), ("ooevv-variable", "variable")]
     tok_re = re.compile(r"[A-Za-z0-9+]+")
     minlen = int(getattr(args, "min_def_len", None) or 40)
     only = getattr(args, "type", None)
@@ -4477,7 +4477,7 @@ def main():
 
     p = subparsers.add_parser("audit-terms",
         help="LINTER: flag OOEVV terms with missing/short definitions or unexpanded abbreviations")
-    p.add_argument("--type", choices=["quality", "entity", "process", "variable", "template", "slot"],
+    p.add_argument("--type", choices=["quality", "entity", "process", "variable"],
         help="Restrict the audit to one element type")
     p.add_argument("--min-def-len", dest="min_def_len", type=int,
         help="Minimum acceptable definition length in characters (default 40)")

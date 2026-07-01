@@ -851,3 +851,166 @@ def test_t5_cmd_create_bundle_iteration_wiring(authoring_db, capsys):
     assert rows[0]["idx"] == 1, f"Expected iteration index 1, got {rows[0]['idx']}"
     assert rows[0]["stage"] == "sensemaking", f"Expected phase 'sensemaking', got {rows[0]['stage']!r}"
     assert rows[0]["bid"] == bundle_id
+
+
+# ---------------------------------------------------------------------------
+# Task 8 tests: _load_template / _load_instance / _load_investigation (clean schema)
+# ---------------------------------------------------------------------------
+
+def test_t8_load_template_no_slots(authoring_db, capsys):
+    """_load_template must return shape from kefed-model+state=template; NO 'slots' key;
+    'variables' from kefed-model-element; 'graph' from _load_experiment."""
+    import types as _types
+    import scientific_literature as sl
+    from typedb.driver import TransactionType
+
+    # Prerequisites: a quality for cmd_add_variable
+    w(authoring_db,
+      'insert $q isa ooevv-quality, has id "scqual-t8-1", has name "T8 signal", '
+      'has ooevv-definition "Test quality for Task 8.", has created-at 2026-06-30T00:00:00;')
+
+    # 1. Create a template (kefed-model with state "template") via cmd_ensure_template
+    args_tpl = _types.SimpleNamespace(name="T8 western blot template")
+    sl.cmd_ensure_template(args_tpl)
+    tid = json.loads(capsys.readouterr().out)["template_id"]
+
+    # 2. Add a parameter variable to the template
+    args_var = _types.SimpleNamespace(
+        experiment=None, template=tid,
+        name="T8 antibody conc", role="parameter",
+        quality="scqual-t8-1", scale_type="numeric",
+        unit="ug/mL", min=None, max=None, values=None,
+        produced_by=None,
+        definition="Concentration of primary antibody in T8 test.",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_var)
+    var_id = json.loads(capsys.readouterr().out)["variable_id"]
+
+    # 3. Call _load_template -> assert shape
+    driver = authoring_db
+    with driver.transaction(sl.TYPEDB_DATABASE, TransactionType.READ) as tx:
+        tpl = sl._load_template(tx, tid)
+
+    assert tpl is not None, "_load_template returned None"
+    assert tpl["id"] == tid
+    assert "slots" not in tpl, "_load_template must NOT carry a 'slots' key (retired)"
+    assert "variables" in tpl, "_load_template must carry a 'variables' list"
+    assert len(tpl["variables"]) == 1, f"Expected 1 variable, got {tpl['variables']}"
+    assert tpl["variables"][0]["id"] == var_id
+    assert tpl["variables"][0].get("role") == "parameter"
+    assert "graph" in tpl, "_load_template must carry a 'graph' key"
+
+
+def test_t8_load_instance_no_bindings(authoring_db, capsys):
+    """_load_instance must return shape from kefed-instance via model role; NO 'bindings' key;
+    'data' rows with cells using ooevv-variable-role (not kefed-variable-role)."""
+    import types as _types
+    import scientific_literature as sl
+    from typedb.driver import TransactionType
+
+    # Prerequisites: quality, bundle (sensemaking), template with a variable
+    w(authoring_db,
+      'insert $q isa ooevv-quality, has id "scqual-t8b-1", has name "T8b signal", '
+      'has ooevv-definition "Test quality for Task 8b.", has created-at 2026-06-30T00:00:00;')
+    w(authoring_db,
+      'insert $b isa scilit-paper-sensemaking, has id "scsm-t8b-1", has name "T8b bundle";')
+
+    # Template
+    args_tpl = _types.SimpleNamespace(name="T8b template")
+    sl.cmd_ensure_template(args_tpl)
+    tid = json.loads(capsys.readouterr().out)["template_id"]
+
+    # Variable on the template (measurement)
+    args_var = _types.SimpleNamespace(
+        experiment=None, template=tid,
+        name="T8b measurement", role="measurement",
+        quality="scqual-t8b-1", scale_type="numeric",
+        unit="AU", min=None, max=None, values=None,
+        produced_by=None,
+        definition="A measurement variable for T8b test.",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_var)
+    var_id = json.loads(capsys.readouterr().out)["variable_id"]
+
+    # Instantiate template under bundle
+    args_inst = _types.SimpleNamespace(bundle="scsm-t8b-1", template=tid, name="T8b run 1")
+    sl.cmd_instantiate_template(args_inst)
+    iid = json.loads(capsys.readouterr().out)["instance_id"]
+
+    # Add a datum row with one cell
+    args_datum = _types.SimpleNamespace(
+        instance=iid,
+        cells=json.dumps([{"variable": var_id, "value": "42", "number": 42.0}]),
+        observation=None,
+        gloss=None,
+    )
+    sl.cmd_add_datum(args_datum)
+    capsys.readouterr()  # discard
+
+    # Call _load_instance -> assert shape
+    driver = authoring_db
+    with driver.transaction(sl.TYPEDB_DATABASE, TransactionType.READ) as tx:
+        inst = sl._load_instance(tx, iid)
+
+    assert inst is not None, "_load_instance returned None"
+    assert inst["id"] == iid
+    assert "bindings" not in inst, "_load_instance must NOT carry a 'bindings' key (retired)"
+    assert "template" in inst, "_load_instance must carry a 'template' key"
+    assert inst["template"]["id"] == tid
+    assert "data" in inst, "_load_instance must carry a 'data' list"
+    assert len(inst["data"]) == 1, f"Expected 1 data row, got {len(inst['data'])}"
+    cells = inst["data"][0]["cells"]
+    assert len(cells) == 1, f"Expected 1 cell, got {len(cells)}"
+    assert cells[0]["variable"] == var_id
+    assert cells[0]["value"] == "42"
+    assert cells[0].get("role") == "measurement"
+
+
+def test_t8_load_investigation_iteration_phases(authoring_db, capsys):
+    """_load_investigation phases must be traversed via scilit-investigation-iteration ->
+    scilit-iteration -> scilit-iteration-stage, not the retired scilit-investigation-phasing.
+    Each phase dict carries 'iteration' from scilit-iteration-index."""
+    import types as _types
+    import scientific_literature as sl
+    from typedb.driver import TransactionType
+
+    # 1. Create a corpus investigation (seeds iteration 1 automatically)
+    w(authoring_db,
+      'insert $c isa scilit-corpus, has id "sclit-corpus-t8c", has name "T8c corpus";')
+    args_inv = _types.SimpleNamespace(
+        type="corpus",
+        collection="sclit-corpus-t8c",
+        name="T8c investigation",
+        purpose="Test _load_investigation iteration phases.",
+        status=None,
+    )
+    sl.cmd_create_investigation(args_inv)
+    inv_id = json.loads(capsys.readouterr().out)["id"]
+
+    # 2. Record a discovery phase at iteration 1
+    args_phase = _types.SimpleNamespace(
+        investigation=inv_id,
+        phase="discovery",
+        content="Initial scoping for T8c.",
+        iteration=1,
+        status=None,
+    )
+    sl.cmd_record_phase(args_phase)
+    capsys.readouterr()
+
+    # 3. Call _load_investigation -> assert phases carry iteration index
+    driver = authoring_db
+    with driver.transaction(sl.TYPEDB_DATABASE, TransactionType.READ) as tx:
+        inv = sl._load_investigation(tx, inv_id)
+
+    assert inv is not None, "_load_investigation returned None"
+    phases = inv.get("phases", [])
+    assert phases, "_load_investigation must return at least one phase"
+    # The discovery phase must carry iteration == 1
+    disc = [p for p in phases if p.get("phase") == "discovery"]
+    assert disc, f"Expected a 'discovery' phase; got phases: {phases}"
+    assert disc[0].get("iteration") == 1, (
+        f"Expected iteration=1 on discovery phase, got {disc[0].get('iteration')!r}"
+    )
