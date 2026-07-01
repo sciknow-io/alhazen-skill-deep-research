@@ -2335,8 +2335,9 @@ def _load_bundles(tx, phase_id):
 
 
 def _load_bundle(tx, bundle_id):
-    """Full detail of one per-paper sensemaking bundle: paper, observations (with KEfED
-    design frame), reported-claims (with hinges), reported-gaps."""
+    """Full detail of one per-paper sensemaking bundle: paper, observations (plain
+    sensemaking notes — no kefed_frame), reported-claims (with hinges), reported-gaps.
+    KEfED experiments are read separately via _load_experiments/_load_instances."""
     be = escape_string(bundle_id)
     head = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{be}"; '
@@ -2350,26 +2351,14 @@ def _load_bundle(tx, bundle_id):
         f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "year": $p.scilit-publication-year }};').resolve())
     bundle["paper"] = ({k: v for k, v in paper[0].items() if v is not None} if paper else None)
 
+    # Observations are plain sensemaking notes: no kefed_frame (kefed-observed-via is retired).
+    # KEfED models are now authored separately and attached via scilit-sensemaking-experiment.
     obs_rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{be}"; '
         f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation; '
         f'fetch {{ "id": $o.id, "name": $o.name, "content": $o.content, '
         f'"knowledge_level": $o.scilit-knowledge-level, "bio_scale": $o.scilit-bio-scale }};').resolve())
-    observations = [{k: v for k, v in r.items() if v is not None} for r in obs_rows]
-    for o in observations:
-        frame = list(tx.query(
-            f'match $o isa scilit-observation, has id "{escape_string(o["id"])}"; '
-            f'(observation: $o, model: $m) isa kefed-observed-via; '
-            f'fetch {{ "id": $m.id, "name": $m.name }};').resolve())
-        if frame:
-            fr = {k: v for k, v in frame[0].items() if v is not None}
-            var_rows = list(tx.query(
-                f'match $m isa kefed-model, has id "{escape_string(fr["id"])}"; '
-                f'(model: $m, variable: $v) isa kefed-element; '
-                f'fetch {{ "name": $v.name, "role": $v.kefed-variable-role, "values": $v.kefed-value-set }};').resolve())
-            fr["variables"] = [{k: v for k, v in r.items() if v is not None} for r in var_rows]
-            o["kefed_frame"] = fr
-    bundle["observations"] = observations
+    bundle["observations"] = [{k: v for k, v in r.items() if v is not None} for r in obs_rows]
 
     rc_rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{be}"; '
@@ -2377,8 +2366,9 @@ def _load_bundle(tx, bundle_id):
         f'fetch {{ "id": $c.id, "type": $c.scilit-claim-type, "statement": $c.scilit-claim-statement }};').resolve())
     reported_claims = [{k: v for k, v in r.items() if v is not None} for r in rc_rows]
     for c in reported_claims:
+        # scilit-reported-claim retired -> scilit-claim (Task 3)
         hinges = list(tx.query(
-            f'match $c isa scilit-reported-claim, has id "{escape_string(c["id"])}"; '
+            f'match $c isa scilit-claim, has id "{escape_string(c["id"])}"; '
             f'(hinging-claim: $c, hinged-to: $t) isa scilit-hinge; $t isa scilit-paper; '
             f'fetch {{ "id": $t.id, "name": $t.name, "doi": $t.scilit-doi }};').resolve())
         c["cites"] = [{k: v for k, v in h.items() if v is not None} for h in hinges]
@@ -2409,11 +2399,11 @@ def _tlabel(concept):
 
 
 def _load_experiments(tx, bundle_id):
-    """Legacy inline experiment (kefed-model) protocol graphs grouped under a bundle.
-    Template-based executions are returned separately by _load_instances."""
+    """Inline experiment (kefed-model) protocol graphs grouped under a bundle via
+    scilit-sensemaking-experiment. Template-based instances are returned by _load_instances."""
     rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
-        f'(bundle: $b, experiment: $m) isa ooevv-bundle-experiment; $m isa kefed-model; '
+        f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment; $m isa kefed-model; '
         f'fetch {{ "id": $m.id, "name": $m.name }};').resolve())
     exps = [{k: v for k, v in r.items() if v is not None} for r in rows]
     for e in exps:
@@ -2422,11 +2412,11 @@ def _load_experiments(tx, bundle_id):
 
 
 def _load_instances(tx, bundle_id):
-    """Template instances (kefed-instance) grouped under a bundle: each filled-slot
-    execution with its data spreadsheet, plus the reusable template it instantiates."""
+    """Template instances (kefed-instance) grouped under a bundle via
+    scilit-sensemaking-experiment: each execution with its data spreadsheet."""
     rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
-        f'(bundle: $b, experiment: $i) isa ooevv-bundle-experiment; $i isa kefed-instance; '
+        f'(sensemaking: $b, experiment: $i) isa scilit-sensemaking-experiment; $i isa kefed-instance; '
         f'fetch {{ "id": $i.id }};').resolve())
     insts = []
     seen_tpl = {}
@@ -2467,13 +2457,15 @@ def _scale_of(tx, var_id):
 
 
 def _var_brief(tx, var_id):
+    """Brief dict for one ooevv-variable: id, name, role, definition, quality, scale, target.
+    Dropped: 'slot' key (ooevv-param-slot / kefed-slot-role / kefed-slot-kind retired in Task 5)."""
     rows = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}", has name $n; '
-        f'fetch {{ "name": $n, "role": $v.kefed-variable-role, '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}", has name $n; '
+        f'fetch {{ "name": $n, "role": $v.ooevv-variable-role, '
         f'"definition": $v.ooevv-definition, "long_form": $v.ooevv-long-form }};').resolve())
     v = {"id": var_id, **({k: x for k, x in rows[0].items() if x is not None} if rows else {})}
     ql = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
         f'(measured-variable: $v, quality: $q) isa ooevv-measures; '
         f'fetch {{ "quality": $q.name, "definition": $q.ooevv-definition, "long_form": $q.ooevv-long-form }};').resolve())
     if ql:
@@ -2482,29 +2474,24 @@ def _var_brief(tx, var_id):
     if sc:
         v["scale"] = sc
     tgt = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
         f'(targeting-parameter: $v, target-entity: $e) isa ooevv-parameter-target; '
         f'fetch {{ "id": $e.id, "name": $e.name, "definition": $e.ooevv-definition, "long_form": $e.ooevv-long-form }};').resolve())
     if tgt:
         v["target_entity"] = {k: x for k, x in tgt[0].items() if x is not None}
-    # template slot this variable references (specificity deferred to instance binding)
-    slot = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
-        f'(slotted-variable: $v, slot: $sl) isa ooevv-param-slot; '
-        f'fetch {{ "id": $sl.id, "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind }};').resolve())
-    if slot:
-        v["slot"] = {k: x for k, x in slot[0].items() if x is not None}
     return v
 
 
 def _load_experiment(tx, exp_id, container_type="kefed-model"):
-    """Full protocol graph for one element-set CONTAINER (a kefed-model experiment OR a
-    kefed-template): processes (with hierarchy, input/output entities, bound parameters,
-    produced measurements). Both container types play ooevv-set-process:container."""
+    """Full protocol graph for one kefed-model: processes (with hierarchy, input/output
+    entities, bound parameters, produced measurements). container_type kept for call-site
+    compatibility but collapsed to kefed-model (template is now a state, not a type)."""
     esc = escape_string(exp_id)
+    # ooevv-set-process(container,contained-process) retired -> kefed-model-element(model,element)
+    # filter element to ooevv-process subtypes (excludes variables/entities in the bigraph)
     proc_rows = list(tx.query(
-        f'match $m isa {container_type}, has id "{esc}"; '
-        f'(container: $m, contained-process: $p) isa ooevv-set-process; $p has name $pn; '
+        f'match $m isa kefed-model, has id "{esc}"; '
+        f'(model: $m, element: $p) isa kefed-model-element; $p isa ooevv-process; $p has name $pn; '
         f'fetch {{ "id": $p.id, "name": $pn, "definition": $p.ooevv-definition, "long_form": $p.ooevv-long-form }};').resolve())
     procs = [{k: v for k, v in r.items() if v is not None} for r in proc_rows]
     for p in procs:
@@ -2524,12 +2511,14 @@ def _load_experiment(tx, exp_id, container_type="kefed-model"):
         p["outputs"] = [r.get("n") for r in tx.query(
             f'match $p isa ooevv-process, has id "{pe}"; (producing-process: $p, output-entity: $e) isa ooevv-process-output; '
             f'$e has name $n; fetch {{ "n": $n }};').resolve()]
+        # binding-process -> binding-bearer (Task 4 role rename)
         pbind = list(tx.query(
-            f'match $p isa ooevv-process, has id "{pe}"; (binding-process: $p, bound-parameter: $v) isa ooevv-parameter-binding; '
+            f'match $p isa ooevv-process, has id "{pe}"; (binding-bearer: $p, bound-parameter: $v) isa ooevv-parameter-binding; '
             f'fetch {{ "id": $v.id }};').resolve())
         p["parameters"] = [_var_brief(tx, r["id"]) for r in pbind]
+        # produced-measurement/terminal-process -> produced-variable/producing-process (Task 4)
         meas = list(tx.query(
-            f'match $p isa ooevv-process, has id "{pe}"; (produced-measurement: $v, terminal-process: $p) isa ooevv-produced-by; '
+            f'match $p isa ooevv-process, has id "{pe}"; (produced-variable: $v, producing-process: $p) isa ooevv-produced-by; '
             f'fetch {{ "id": $v.id }};').resolve())
         p["measurements"] = [_var_brief(tx, r["id"]) for r in meas]
     return {"id": exp_id, "processes": procs}

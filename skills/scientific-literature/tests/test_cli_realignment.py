@@ -659,6 +659,149 @@ def test_t5_cmd_add_observation_simple(authoring_db, capsys):
     )
 
 
+# ---------------------------------------------------------------------------
+# Task 7 tests: read model rework (bundle/experiment/variable)
+#   _load_bundle      -> no kefed_frame per observation; reads experiments via
+#                        scilit-sensemaking-experiment; fixes scilit-claim hinge
+#   _load_experiment  -> kefed-model-element(model,element); binding-bearer;
+#                        produced-variable/producing-process; no container_type param
+#   _var_brief        -> ooevv-variable; ooevv-variable-role; no slot block
+#   _load_experiments -> scilit-sensemaking-experiment (not ooevv-bundle-experiment)
+#   _load_instances   -> scilit-sensemaking-experiment (not ooevv-bundle-experiment)
+# ---------------------------------------------------------------------------
+
+def test_t7_load_bundle_experiment_variable(authoring_db, capsys):
+    """_load_bundle and _load_experiment return the right dicts on the clean schema.
+
+    Authoring path (Tasks 4-5):
+      bundle -> scilit-sensemaking-observation -> observation
+      bundle -> scilit-sensemaking-experiment  -> kefed-model
+                kefed-model-element             -> process + variable
+                ooevv-produced-by               -> produced-variable/producing-process
+                ooevv-parameter-binding         -> binding-bearer/bound-parameter
+
+    Assert:
+      - bundle["observations"] has the observation (NO kefed_frame key)
+      - bundle["experiments"]  has the kefed-model entry
+      - _load_experiment returns processes with parameters and measurements (no slot)
+      - _var_brief returns ooevv-variable-role, no 'slot' key
+    """
+    import scientific_literature as sl
+    from typedb.driver import TransactionType
+
+    # --- Build fixture data ---
+    # 1. bundle
+    w(authoring_db,
+      'insert $b isa scilit-paper-sensemaking, has id "scsm-t7-1", has name "T7 bundle";')
+
+    # 2. observation threaded under bundle
+    import types as _types
+    args_obs = _types.SimpleNamespace(
+        bundle="scsm-t7-1",
+        statement="SIRT3 is enriched in young HSCs.",
+        name=None,
+        knowledge_level="association",
+        bio_scale="cellular",
+        experiment_type=None,
+        variables=None,
+    )
+    sl.cmd_add_observation(args_obs)
+    obs_id = json.loads(capsys.readouterr().out)["observation_id"]
+
+    # 3. kefed-model experiment threaded under bundle
+    args_exp = _types.SimpleNamespace(bundle="scsm-t7-1", name="T7 western blot")
+    sl.cmd_add_experiment(args_exp)
+    exp_id = json.loads(capsys.readouterr().out)["experiment_id"]
+
+    # 4. process in the model
+    args_proc = _types.SimpleNamespace(
+        experiment=exp_id, template=None,
+        name="T7 assay step", type="assay",
+        parent=None, definition="A test assay.", long_form=None,
+    )
+    sl.cmd_add_process(args_proc)
+    proc_id = json.loads(capsys.readouterr().out)["process_id"]
+
+    # 5. measurement variable (produced by the process)
+    w(authoring_db,
+      'insert $q isa ooevv-quality, has id "scqual-t7-1", has name "signal", '
+      'has ooevv-definition "test signal", has created-at 2026-06-30T00:00:00;')
+    args_meas = _types.SimpleNamespace(
+        experiment=exp_id, template=None,
+        name="SIRT3 band", role="measurement",
+        quality="scqual-t7-1", scale_type="numeric",
+        unit="AU", min=None, max=None, values=None,
+        produced_by=proc_id,
+        definition="Normalized SIRT3 band intensity from western blot.",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_meas)
+    meas_id = json.loads(capsys.readouterr().out)["variable_id"]
+
+    # 6. parameter variable bound to process
+    args_param = _types.SimpleNamespace(
+        experiment=exp_id, template=None,
+        name="antibody conc", role="parameter",
+        quality="scqual-t7-1", scale_type="numeric",
+        unit="ug/mL", min=None, max=None, values=None,
+        produced_by=None,
+        definition="Concentration of primary antibody used in western blot.",
+        long_form=None,
+    )
+    sl.cmd_add_variable(args_param)
+    param_id = json.loads(capsys.readouterr().out)["variable_id"]
+
+    args_bind = _types.SimpleNamespace(
+        process=proc_id, parameter=param_id, target_entity=None,
+    )
+    sl.cmd_bind_parameter(args_bind)
+    capsys.readouterr()  # discard bind output
+
+    # --- READ via _load_bundle + _load_experiment ---
+    driver = authoring_db
+    with driver.transaction(sl.TYPEDB_DATABASE, TransactionType.READ) as tx:
+        bundle = sl._load_bundle(tx, "scsm-t7-1")
+
+    # bundle must have the observation (no kefed_frame)
+    assert bundle is not None, "_load_bundle returned None"
+    obs_list = bundle.get("observations", [])
+    assert len(obs_list) == 1, f"Expected 1 observation, got {len(obs_list)}"
+    obs = obs_list[0]
+    assert obs["id"] == obs_id
+    assert "kefed_frame" not in obs, "observation must NOT carry kefed_frame"
+    assert obs.get("knowledge_level") == "association"
+
+    # bundle must have the experiment
+    exp_list = bundle.get("experiments", [])
+    assert len(exp_list) == 1, f"Expected 1 experiment, got {len(exp_list)}: {exp_list}"
+    assert exp_list[0]["id"] == exp_id
+
+    # experiment detail
+    with driver.transaction(sl.TYPEDB_DATABASE, TransactionType.READ) as tx:
+        exp_detail = sl._load_experiment(tx, exp_id)
+
+    procs = exp_detail.get("processes", [])
+    assert len(procs) == 1, f"Expected 1 process, got {len(procs)}"
+    p = procs[0]
+    assert p["id"] == proc_id
+
+    # process must have measurement (no slot key on var_brief)
+    meas_list = p.get("measurements", [])
+    assert len(meas_list) == 1, f"Expected 1 measurement, got {meas_list}"
+    m = meas_list[0]
+    assert m["id"] == meas_id
+    assert "slot" not in m, "variable must NOT have slot key"
+    assert m.get("role") == "measurement"
+
+    # process must have bound parameter
+    param_list = p.get("parameters", [])
+    assert len(param_list) == 1, f"Expected 1 parameter, got {param_list}"
+    pp = param_list[0]
+    assert pp["id"] == param_id
+    assert "slot" not in pp, "parameter must NOT have slot key"
+    assert pp.get("role") == "parameter"
+
+
 def test_t5_cmd_create_bundle_iteration_wiring(authoring_db, capsys):
     """cmd_create_bundle must thread the bundle under the sensemaking stage of iteration 1
     via: investigation -> scilit-iteration(idx=1) -> scilit-iteration-stage ->
