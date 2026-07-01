@@ -1678,6 +1678,12 @@ def test_no_retired_types_in_cli():
         "binding-bearer",
         "bound-parameter",
         "produced-variable",
+        # Retired eset-{id} naming convention: element-set ids must come from generate_id,
+        # NOT be derived from the model id.  Precise: won't trip on element-set / elementset /
+        # kefed-model-elementset or generate_id("eset") (which produces eset_id variable).
+        "eset-{mid}",
+        "eset-{model_id}",
+        "eset-{exp_id}",
     ]
 
     def live_text(path: Path) -> str:
