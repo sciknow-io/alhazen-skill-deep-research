@@ -356,6 +356,53 @@ def test_kefed_model_node_graph(scratch_db):
         f"ooevv-process-input edge between nodes missing: {edge!r}"
 
 
+def test_model_definition_and_elementset(scratch_db):
+    """Round-trip: kefed-model owns ooevv-definition/ooevv-long-form; two models share one element-set."""
+    # 1. Create a shared element-set
+    w(scratch_db,
+      'insert $es isa ooevv-element-set, has id "ooevv-es-shared", has name "shared vocab";')
+    # 2. Create first kefed-model with definition + long-form
+    w(scratch_db,
+      'insert $m isa kefed-model, has id "kefedm-def",'
+      '  has name "model-def",'
+      '  has ooevv-definition "a qPCR model measuring SIRT3 expression",'
+      '  has ooevv-long-form "Quantitative PCR model";')
+    # 3. Link model 1 to the element-set via kefed-model-elementset
+    w(scratch_db,
+      'match $m isa kefed-model, has id "kefedm-def";'
+      '  $es isa ooevv-element-set, has id "ooevv-es-shared";'
+      'insert (model: $m, element-set: $es) isa kefed-model-elementset;')
+    # 4. Create second kefed-model and link it to the SAME element-set
+    w(scratch_db,
+      'insert $m2 isa kefed-model, has id "kefedm-def-2", has name "model-def-2";')
+    w(scratch_db,
+      'match $m2 isa kefed-model, has id "kefedm-def-2";'
+      '  $es isa ooevv-element-set, has id "ooevv-es-shared";'
+      'insert (model: $m2, element-set: $es) isa kefed-model-elementset;')
+    # 5. Assert: both models resolve the shared element-set (independent queries)
+    es1 = r(scratch_db,
+            'match $m isa kefed-model, has id "kefedm-def";'
+            '  (model: $m, element-set: $es) isa kefed-model-elementset;'
+            '  $es has id $esid; fetch {"esid": $esid};')
+    assert es1 and es1[0]["esid"] == "ooevv-es-shared", \
+        f"model 1 -> element-set resolution failed: {es1!r}"
+    es2 = r(scratch_db,
+            'match $m2 isa kefed-model, has id "kefedm-def-2";'
+            '  (model: $m2, element-set: $es) isa kefed-model-elementset;'
+            '  $es has id $esid; fetch {"esid": $esid};')
+    assert es2 and es2[0]["esid"] == "ooevv-es-shared", \
+        f"model 2 -> shared element-set resolution failed: {es2!r}"
+    # 6. Assert: model 1's definition + long-form round-trip
+    defn = r(scratch_db,
+             'match $m isa kefed-model, has id "kefedm-def",'
+             '  has ooevv-definition $def, has ooevv-long-form $lf;'
+             '  fetch {"def": $def, "lf": $lf};')
+    assert defn, "Expected definition/long-form rows but got none"
+    assert "SIRT3" in defn[0]["def"], f"definition round-trip failed: {defn[0]['def']!r}"
+    assert defn[0]["lf"] == "Quantitative PCR model", \
+        f"long-form round-trip failed: {defn[0]['lf']!r}"
+
+
 def test_datum_observation_bridge(scratch_db):
     """Round-trip: ooevv-datum-observation is the sole bridge from a datum row to its observation."""
     # create a template model + instance + datum

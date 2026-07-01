@@ -942,6 +942,25 @@ entity scilit-observation plays ooevv-datum-observation:observation;
 
 
 # =============================================================================
+# KEFED-MODEL: first-class element-set link + model-level definitions (Task 3a.1)
+# Retiring the eset-{model_id} naming convention: a named relation links a model
+# to its element-set so element-sets are reusable ontology containers that can be
+# shared by many models.
+# =============================================================================
+
+# relation must be declared before the plays extensions below
+relation kefed-model-elementset,
+    relates model, relates element-set;
+
+# a kefed-model carries its own plain-English definition + abbreviation expansion
+entity kefed-model owns ooevv-definition, owns ooevv-long-form;
+
+# plays extensions: kefed-model and ooevv-element-set join the new relation
+entity kefed-model plays kefed-model-elementset:model;
+entity ooevv-element-set plays kefed-model-elementset:element-set;
+
+
+# =============================================================================
 # CURATION STANDARD: structured abbreviation long-forms (undergraduate-readable)
 # Every OOEVV element carries (a) an ooevv-definition: a plain-English, undergraduate-
 # level explanation of what it is and what it does in the experiment, and (b) an
