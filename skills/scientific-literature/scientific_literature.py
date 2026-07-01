@@ -3414,6 +3414,19 @@ def cmd_add_evidence(args):
                       "instances_linked": inst_linked}, indent=2))
 
 
+def _paper_has_fulltext(driver, paper_id):
+    """True iff the paper has an alh-representation to a fulltext artifact
+    (an alh-artifact bearing scilit-fulltext-kind, e.g. scilit-pdf-fulltext /
+    scilit-jats-fulltext). This is the marker that fetch-pdf/full-text ingest ran."""
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+        rows = list(tx.query(
+            f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+            f'$a isa alh-artifact, has scilit-fulltext-kind $k; '
+            f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+            f'fetch {{ "k": $k }};').resolve())
+    return bool(rows)
+
+
 def cmd_create_bundle(args):
     """Create a per-paper sensemaking bundle for a paper, in an investigation's sensemaking
     stage (a single-paper KQED run persists into THIS, not its own investigation)."""
@@ -3422,6 +3435,14 @@ def cmd_create_bundle(args):
         paper_id = _resolve_paper_arg(driver, args.paper)
         if not paper_id:
             print(json.dumps({"success": False, "error": f"Could not resolve paper: {args.paper}"}))
+            sys.exit(1)
+        # KQED ingestion requires the paper's full text -- you cannot sense-make what you
+        # haven't got. Refuse until fetch-pdf has attached a fulltext artifact.
+        if not _paper_has_fulltext(driver, paper_id):
+            print(json.dumps({"success": False,
+                              "error": f"KQED ingestion blocked: paper {paper_id} has no full text. "
+                                       f"Run 'fetch-pdf --id {paper_id}' (or 'fetch-pdf --id {paper_id} "
+                                       f"--file <pdf>') first."}))
             sys.exit(1)
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             inv = list(tx.query(

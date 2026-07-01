@@ -1004,6 +1004,14 @@ def test_t5_cmd_create_bundle_iteration_wiring(authoring_db, capsys):
 
     w(authoring_db,
       'insert $p isa scilit-paper, has id "scilit-paper-t5b-001", has name "Test paper T5b";')
+    # KQED ingestion requires full text: attach a fulltext artifact (see test_fulltext_guard).
+    w(authoring_db,
+      'insert $a isa scilit-pdf-fulltext, has id "scilit-fulltext-t5b", has name "T5b [full text]", '
+      'has scilit-fulltext-kind "pdf";')
+    w(authoring_db,
+      'match $p isa scilit-paper, has id "scilit-paper-t5b-001"; '
+      '$a isa scilit-pdf-fulltext, has id "scilit-fulltext-t5b"; '
+      'insert (alh-artifact: $a, referent: $p) isa alh-representation;')
 
     args_bundle = types.SimpleNamespace(
         investigation=inv_id,
