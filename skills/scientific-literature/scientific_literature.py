@@ -2207,13 +2207,12 @@ def cmd_list_investigations(args):
                     ).resolve())
                     inv["focal_paper"] = ({k: v for k, v in focal[0].items() if v is not None}
                                           if focal else None)
-                phases = list(tx.query(
+                iters = list(tx.query(
                     f'match $inv isa scilit-investigation, has id "{escape_string(inv["id"])}"; '
-                    f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
-                    f'$ph isa scilit-investigation-phase, has scilit-phase $p; '
-                    f'fetch {{ "p": $p }};'
+                    f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+                    f'select $it;'
                 ).resolve())
-                inv["phase_count"] = len(phases)
+                inv["iteration_count"] = len(iters)
 
     print(json.dumps({"success": True, "investigations": invs, "count": len(invs)}, indent=2))
 
@@ -2477,7 +2476,8 @@ def _var_brief(tx, var_id):
     ql = list(tx.query(
         f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
         f'(measured-variable: $v, quality: $q) isa ooevv-measures; '
-        f'fetch {{ "quality": $q.name, "definition": $q.ooevv-definition, "long_form": $q.ooevv-long-form }};').resolve())
+        f'fetch {{ "quality": $q.name, "definition": $q.ooevv-definition, "long_form": $q.ooevv-long-form, '
+        f'"quality_id": $q.id, "curie": $q.scilit-curie, "grounding_state": $q.scilit-grounding-state }};').resolve())
     if ql:
         v["quality"] = {k: x for k, x in ql[0].items() if x is not None}
     sc = _scale_of(tx, var_id)
@@ -3041,6 +3041,208 @@ def cmd_show_investigation(args):
         print(json.dumps({"success": False, "error": "Investigation not found"}))
         sys.exit(1)
     print(json.dumps({"success": True, **investigation}, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Stage + paper-curation aggregators (dashboard: investigation-centric IA)
+# ---------------------------------------------------------------------------
+
+def _load_fragments(tx, paper_id):
+    """Verbatim full-text fragments (scilit-sentence / -section) for a paper, reached
+    from its scilit-pdf-fulltext artifact via alh-fragmentation. Each carries offset +
+    verbatim content; kind is the concrete fragment subtype label."""
+    esc = escape_string(paper_id)
+    rows = list(tx.query(
+        f'match $p isa scilit-paper, has id "{esc}"; '
+        f'$a isa scilit-pdf-fulltext; (alh-artifact: $a, referent: $p) isa alh-representation; '
+        f'(whole: $a, part: $f) isa alh-fragmentation; $f isa alh-fragment; '
+        f'fetch {{ "id": $f.id, "content": $f.content, "offset": $f.offset, "length": $f.length }};').resolve())
+    frags = [{k: v for k, v in r.items() if v is not None} for r in rows]
+    for fr in frags:
+        sub = list(tx.query(
+            f'match $f isa alh-fragment, has id "{escape_string(fr["id"])}"; select $f;').resolve())
+        if sub:
+            try:
+                fr["kind"] = _tlabel(sub[0].get("f")).replace("scilit-", "")
+            except Exception:
+                fr["kind"] = None
+    frags.sort(key=lambda f: f.get("offset") if f.get("offset") is not None else 1 << 30)
+    return frags
+
+
+def _load_derivations(tx, paper_id):
+    """Span-anchoring edges (alh-derivation): each rhetorical note (derivative) tied to the
+    verbatim fragment (derived-from-source) that justifies it. Returns note->fragment rows."""
+    esc = escape_string(paper_id)
+    rows = list(tx.query(
+        f'match $p isa scilit-paper, has id "{esc}"; '
+        f'$a isa scilit-pdf-fulltext; (alh-artifact: $a, referent: $p) isa alh-representation; '
+        f'(whole: $a, part: $f) isa alh-fragmentation; '
+        f'(derivative: $n, derived-from-source: $f) isa alh-derivation; '
+        f'fetch {{ "note": $n.id, "frag": $f.id, "offset": $f.offset, "quote": $f.content }};').resolve())
+    return [{k: v for k, v in r.items() if v is not None} for r in rows]
+
+
+def cmd_list_databases(args):
+    """List TypeDB databases for the dashboard DB switcher, each annotated with whether it
+    holds scientific-literature data (the scilit dashboard is only meaningful where it does).
+    Different databases carry different skills' data, so the UI filters to scilit-bearing DBs.
+    `databases` keeps the flat name list for back-compat; `info` adds the per-DB lookup."""
+    info = []
+    with get_driver() as driver:
+        names = sorted(db.name for db in driver.databases.all())
+        for name in names:
+            entry = {"name": name, "hasScilit": False, "investigations": 0, "papers": 0}
+            try:
+                with driver.transaction(name, TransactionType.READ) as tx:
+                    invs = list(tx.query('match $i isa scilit-investigation; select $i;').resolve())
+                    entry["investigations"] = len(invs)
+                    papers = list(tx.query(
+                        'match $p isa scilit-paper; select $p; limit 1;').resolve())
+                    entry["papers"] = len(papers)
+                    entry["hasScilit"] = bool(invs) or bool(papers)
+            except Exception:
+                # scilit types not defined in this DB (or unreadable) -> not scilit-bearing
+                pass
+            info.append(entry)
+    print(json.dumps({
+        "success": True,
+        "databases": [e["name"] for e in info],
+        "info": info,
+    }, indent=2))
+
+
+def cmd_show_stage(args):
+    """Show one investigation stage (scilit-investigation-phase) with kind-specific data:
+    discovery (corpora + note), ingest (papers + artifact status + doi + suggested pdf filename),
+    sensemaking (per-paper bundles + counts), analysis (pipeline/faceting notes), report (note)."""
+    pid = args.id
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            head = list(tx.query(
+                f'match $ph isa scilit-investigation-phase, has id "{escape_string(pid)}"; '
+                f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, '
+                f'"kind": $ph.scilit-phase }};').resolve())
+            if not head:
+                print(json.dumps({"success": False, "error": "Stage not found"})); sys.exit(1)
+            stage = {k: v for k, v in head[0].items() if v is not None}
+            kind = stage.get("kind")
+            inv = list(tx.query(
+                f'match $ph isa scilit-investigation-phase, has id "{escape_string(pid)}"; '
+                f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+                f'(investigation: $iv, iteration: $it) isa scilit-investigation-iteration; '
+                f'$it has scilit-iteration-index $idx; '
+                f'fetch {{ "id": $iv.id, "name": $iv.name, "iteration": $idx }};').resolve())
+            stage["investigation"] = ({k: v for k, v in inv[0].items() if v is not None} if inv else None)
+            inv_id = inv[0]["id"] if inv else None
+
+            if kind in ("discovery", "ingest"):
+                corpora = []
+                if inv_id:
+                    crows = list(tx.query(
+                        f'match $iv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+                        f'(investigation: $iv, corpus: $c) isa scilit-investigation-scope; '
+                        f'fetch {{ "id": $c.id, "name": $c.name, "description": $c.description, '
+                        f'"logical-query": $c.alh-logical-query }};').resolve())
+                    corpora = [{k: v for k, v in r.items() if v is not None} for r in crows]
+                stage["corpora"] = corpora
+                if kind == "ingest":
+                    papers = []
+                    for c in corpora:
+                        prows = list(tx.query(
+                            f'match $c isa scilit-corpus, has id "{escape_string(c["id"])}"; '
+                            f'(collection: $c, member: $p) isa alh-collection-membership; $p isa scilit-paper; '
+                            f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, '
+                            f'"year": $p.scilit-publication-year, '
+                            f'"acquisition_status": $p.scilit-acquisition-status }};').resolve())
+                        for r in prows:
+                            pp = {k: v for k, v in r.items() if v is not None}
+                            fe = list(tx.query(
+                                f'match $p isa scilit-paper, has id "{escape_string(pp["id"])}"; '
+                                f'$a isa scilit-pdf-fulltext; '
+                                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+                                f'fetch {{ "id": $a.id }};').resolve())
+                            pp["fulltextPresent"] = bool(fe)
+                            pp["corpus"] = c["id"]
+                            # canonical save name for a manually downloaded PDF; feed via
+                            #   fetch-pdf --id <paper> --file <pdfFilename>
+                            pp["pdfFilename"] = f'{pp["id"]}.pdf'
+                            papers.append(pp)
+                    papers.sort(key=lambda p: p.get("year") or 0, reverse=True)
+                    stage["papers"] = papers
+            elif kind == "sensemaking":
+                stage["bundles"] = _load_bundles(tx, pid)
+            elif kind == "analysis":
+                fn = list(tx.query(
+                    f'match $ph isa scilit-investigation-phase, has id "{escape_string(pid)}"; '
+                    f'(phase: $ph, faceting: $fn) isa scilit-phase-faceting; '
+                    f'fetch {{ "id": $fn.id, "name": $fn.name }};').resolve())
+                stage["pipeline_notes"] = [{k: v for k, v in f.items() if v is not None} for f in fn]
+    print(json.dumps({"success": True, **stage}, indent=2))
+
+
+def cmd_show_paper_curation(args):
+    """One-shot payload for the single-paper curation walkthrough: paper + full-text artifact,
+    verbatim fragments, span-anchoring (alh-derivation), the full sensemaking bundle
+    (observations / claims / gaps / mechanisms / KEfED experiments / data instances), and a
+    data signature per experiment. hasCuration=False when the paper has no bundle."""
+    pid = args.id
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            head = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
+                f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "pmid": $p.scilit-pmid, '
+                f'"year": $p.scilit-publication-year, "journal": $p.scilit-journal-name, '
+                f'"acquisition_status": $p.scilit-acquisition-status }};').resolve())
+            if not head:
+                print(json.dumps({"success": False, "error": "Paper not found"})); sys.exit(1)
+            paper = {k: v for k, v in head[0].items() if v is not None}
+            art = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; $a isa scilit-pdf-fulltext; '
+                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+                f'fetch {{ "id": $a.id, "cache-path": $a.cache-path, "file-size": $a.file-size, '
+                f'"format": $a.format, "source-uri": $a.source-uri }};').resolve())
+            fulltext = ({k: v for k, v in art[0].items() if v is not None} if art else None)
+
+            b = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
+                f'(sensemaking: $bn, paper: $p) isa scilit-sensemaking-paper; '
+                f'fetch {{ "id": $bn.id }};').resolve())
+            if not b:
+                print(json.dumps({"success": True, "hasCuration": False,
+                                  "paper": paper, "fulltext": fulltext}, indent=2))
+                return
+            bundle_id = b[0]["id"]
+            bundle = _load_bundle(tx, bundle_id)
+            fragments = _load_fragments(tx, pid)
+            derivations = _load_derivations(tx, pid)
+            # claim -> observation grounding edges (scilit-claim-observation)
+            co_rows = list(tx.query(
+                f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
+                f'(sensemaking: $b, reported-claim: $c) isa scilit-sensemaking-reported-claim; '
+                f'(claim: $c, observation: $o) isa scilit-claim-observation; '
+                f'fetch {{ "claim": $c.id, "observation": $o.id }};').resolve())
+            claim_observations = [{k: v for k, v in r.items() if v is not None} for r in co_rows]
+            spine_rows = list(tx.query(
+                f'match $bn isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
+                f'(phase: $ph, sensemaking: $bn) isa scilit-phase-sensemaking; '
+                f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+                f'(investigation: $iv, iteration: $it) isa scilit-investigation-iteration; '
+                f'$it has scilit-iteration-index $idx; '
+                f'fetch {{ "id": $iv.id, "name": $iv.name, "iteration": $idx, "phase": $ph.id }};').resolve())
+            spine = ({k: v for k, v in spine_rows[0].items() if v is not None} if spine_rows else None)
+            signatures = {}
+            for e in bundle.get("experiments", []):
+                try:
+                    signatures[e["id"]] = _data_signature(tx, e["id"])
+                except Exception:
+                    signatures[e["id"]] = {}
+    print(json.dumps({
+        "success": True, "hasCuration": True, "paper": paper, "fulltext": fulltext,
+        "bundle_id": bundle_id, "spine": spine, "fragments": fragments,
+        "derivations": derivations, "claim_observations": claim_observations,
+        "bundle": bundle, "signatures": signatures,
+    }, indent=2))
 
 
 def _render_investigation_md(inv):
@@ -4692,7 +4894,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Scientific Literature CLI - multi-source paper search and ingestion"
     )
+    # Global DB override (before the subcommand); threads through the gateway since it is
+    # a plain arg. Lets the dashboard switch which TypeDB database it reads.
+    parser.add_argument("--database", "--db", dest="database",
+                        help="Override TYPEDB_DATABASE for this invocation")
     subparsers = parser.add_subparsers(dest="command")
+
+    # list-databases (dashboard DB switcher)
+    subparsers.add_parser("list-databases", help="List available TypeDB databases")
 
     # search
     p = subparsers.add_parser("search", help="Search a literature source and store results")
@@ -5076,6 +5285,16 @@ def main():
     p.add_argument("--statement", required=True, help="Gap text")
     p.add_argument("--goal", required=True, help="The knowledge-goal it implies")
 
+    # show-stage (dashboard: investigation stage content)
+    p = subparsers.add_parser("show-stage",
+        help="Show one investigation stage (phase) with kind-specific data")
+    p.add_argument("--id", required=True, help="Stage/phase id (scphase-...)")
+
+    # show-paper-curation (dashboard: single-paper 5-layer walkthrough payload)
+    p = subparsers.add_parser("show-paper-curation",
+        help="One-shot curation walkthrough payload for a single paper (all layers)")
+    p.add_argument("--id", required=True, help="Paper id (scilit-paper-...)")
+
     # show-bundle
     p = subparsers.add_parser("show-bundle", help="Show one per-paper sensemaking bundle in full")
     p.add_argument("--id", required=True, help="Bundle id (scsense-...)")
@@ -5146,6 +5365,10 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    # Apply the global DB override (module-level attr read by get_driver et al.)
+    if getattr(args, "database", None):
+        globals()["TYPEDB_DATABASE"] = args.database
+
     SEMANTIC_COMMANDS = {"embed", "search-semantic", "cluster", "plot-clusters", "map",
                          "embed-sections", "search-sections"}
     NON_DB_COMMANDS = {"count"} | SEMANTIC_COMMANDS
@@ -5212,6 +5435,9 @@ def main():
         "add-datum": cmd_add_datum,
         "add-reported-claim": cmd_add_reported_claim,
         "add-reported-gap": cmd_add_reported_gap,
+        "list-databases": cmd_list_databases,
+        "show-stage": cmd_show_stage,
+        "show-paper-curation": cmd_show_paper_curation,
         "show-bundle": cmd_show_bundle,
         "show-experiment": cmd_show_experiment,
         "show-template": cmd_show_template,

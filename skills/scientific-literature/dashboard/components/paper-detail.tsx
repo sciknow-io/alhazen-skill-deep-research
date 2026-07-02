@@ -4,7 +4,9 @@ import { useState, useEffect } from 'react';
 import { T, FACETS, facetColor } from './tokens';
 import { BackNav, HeaderStrip, Panel, FacetBadge, MarkdownContent } from './atoms';
 import { Shell, Loading, ErrorBox } from './corpus-detail';
-import type { PaperDetail as PaperDetailData } from '@/lib/scientific-literature';
+import { PaperCuration } from './paper-curation';
+import { withDb } from './db';
+import type { PaperDetail as PaperDetailData, PaperCurationDetail } from '@/lib/scientific-literature';
 
 /** Split a "<facet>:<value>" keyword into [facet, value] when facet is one of the 8. */
 function parseFacetTags(keywords: string[]): Array<{ facet: string; value: string }> {
@@ -21,11 +23,12 @@ function parseFacetTags(keywords: string[]): Array<{ facet: string; value: strin
 
 export function PaperDetail({ id }: { id: string }) {
   const [data, setData] = useState<PaperDetailData | null>(null);
+  const [curation, setCuration] = useState<PaperCurationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/scientific-literature/paper/${id}`)
+    fetch(withDb(`/api/scientific-literature/paper/${id}`))
       .then((r) => (r.ok ? r.json() : Promise.reject(`API returned ${r.status}`)))
       .then((json) => {
         if (json.error || json.success === false) setError(json.error || 'Paper not found');
@@ -33,6 +36,11 @@ export function PaperDetail({ id }: { id: string }) {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
+    // progressive: the heavier curation walkthrough loads after the header
+    fetch(withDb(`/api/scientific-literature/paper/${id}/curation`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => { if (json && json.hasCuration) setCuration(json); })
+      .catch(() => { /* no curation — bibliographic view only */ });
   }, [id]);
 
   const paper = data?.paper;
@@ -94,6 +102,8 @@ export function PaperDetail({ id }: { id: string }) {
               </div>
             </Panel>
           )}
+
+          {curation && <PaperCuration data={curation} />}
         </>
       )}
     </Shell>

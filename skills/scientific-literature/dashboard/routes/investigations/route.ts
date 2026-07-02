@@ -5,7 +5,8 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const collection = searchParams.get('collection') || undefined;
-    const data = await listInvestigations(collection);
+    const db = searchParams.get('db') || undefined;
+    const data = await listInvestigations(collection, db);
     return NextResponse.json(data);
   } catch (error) {
     console.error('listInvestigations error:', error);
