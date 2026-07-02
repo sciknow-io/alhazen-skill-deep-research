@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from './tokens';
 import { BackNav, HeaderStrip, Panel, CodeBlock, Icon, MarkdownContent } from './atoms';
 import { Shell, Loading, ErrorBox } from './corpus-detail';
+import { withDb } from './db';
 import type { FacetingNoteDetail } from '@/lib/scientific-literature';
 
 // Observable Plot renderer (pattern ported from tech-recon's analysis-runner): a note's stored
@@ -42,7 +43,7 @@ export function FacetingNoteViewer({ id }: { id: string }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    fetch(`/api/scientific-literature/faceting-note/${id}`)
+    fetch(withDb(`/api/scientific-literature/faceting-note/${id}`))
       .then((r) => (r.ok ? r.json() : Promise.reject(`API returned ${r.status}`)))
       .then((json) => {
         if (json.error || json.success === false) setError(json.error || 'Note not found');
@@ -58,7 +59,7 @@ export function FacetingNoteViewer({ id }: { id: string }) {
     setRunning(true);
     setRunMsg(null);
     try {
-      const res = await fetch(`/api/scientific-literature/faceting-note/${id}/run`, { method: 'POST' });
+      const res = await fetch(withDb(`/api/scientific-literature/faceting-note/${id}/run`), { method: 'POST' });
       const json = await res.json();
       if (json.error || json.success === false) {
         setRunMsg(`Error: ${json.error || 'run failed'}`);

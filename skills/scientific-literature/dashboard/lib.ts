@@ -43,15 +43,16 @@ async function runScilit(args: string[], db?: string): Promise<unknown> {
   return JSON.parse(stdout);
 }
 
-async function runNotebook(args: string[]): Promise<unknown> {
-  if (gatewayConfigured()) return runSkill('typedb-notebook', args);
+async function runNotebook(args: string[], db?: string): Promise<unknown> {
+  const full = db ? ['--database', db, ...args] : args;
+  if (gatewayConfigured()) return runSkill('typedb-notebook', full);
   const { stdout } = await execFileAsync(
     'uv',
-    ['run', 'python', NOTEBOOK_SCRIPT, ...args],
+    ['run', 'python', NOTEBOOK_SCRIPT, ...full],
     {
       cwd: CWD,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TYPEDB_DATABASE: process.env.TYPEDB_DATABASE || 'alh_deep_research' },
+      env: { ...process.env, TYPEDB_DATABASE: db || process.env.TYPEDB_DATABASE || 'alh_deep_research' },
     }
   );
   return JSON.parse(stdout);
@@ -353,12 +354,12 @@ export async function getMap(opts?: { collectionIds?: string[]; all?: boolean; m
 
 // --- Faceting-note endpoints (core typedb-notebook CLI) -----------------------
 
-export async function listFacetingNotes(): Promise<{ notes: FacetingNoteSummary[]; count: number }> {
-  return runNotebook(['list-pipeline-notes']) as Promise<{ notes: FacetingNoteSummary[]; count: number }>;
+export async function listFacetingNotes(db?: string): Promise<{ notes: FacetingNoteSummary[]; count: number }> {
+  return runNotebook(['list-pipeline-notes'], db) as Promise<{ notes: FacetingNoteSummary[]; count: number }>;
 }
 
-export async function getFacetingNote(id: string): Promise<FacetingNoteDetail> {
-  return runNotebook(['show-pipeline-note', '--id', id]) as Promise<FacetingNoteDetail>;
+export async function getFacetingNote(id: string, db?: string): Promise<FacetingNoteDetail> {
+  return runNotebook(['show-pipeline-note', '--id', id], db) as Promise<FacetingNoteDetail>;
 }
 
 export interface RunResult {
@@ -371,8 +372,8 @@ export interface RunResult {
   data?: unknown[];        // terminal output rows for the plot
 }
 
-export async function runFacetingNote(id: string): Promise<RunResult> {
-  return runNotebook(['run-pipeline-note', '--id', id]) as Promise<RunResult>;
+export async function runFacetingNote(id: string, db?: string): Promise<RunResult> {
+  return runNotebook(['run-pipeline-note', '--id', id], db) as Promise<RunResult>;
 }
 
 // --- Investigation endpoints (scilit CLI) -------------------------------------

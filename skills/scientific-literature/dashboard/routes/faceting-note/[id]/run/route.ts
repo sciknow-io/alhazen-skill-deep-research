@@ -4,7 +4,8 @@ import { runFacetingNote } from '@/lib/scientific-literature';
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const data = await runFacetingNote(id);
+    const db = new URL(req.url).searchParams.get('db') || undefined;
+    const data = await runFacetingNote(id, db);
     return NextResponse.json(data);
   } catch (error) {
     console.error('runFacetingNote error:', error);
