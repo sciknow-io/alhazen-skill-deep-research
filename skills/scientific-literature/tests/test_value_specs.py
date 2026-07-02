@@ -71,6 +71,35 @@ def test_add_variable_value_spec_is_shared(authoring_db, capsys):
     assert len(meas) == 2
 
 
+def test_role_is_derived_from_value_spec_cardinality(authoring_db, capsys):
+    """A variable's parameter/constant role is fixed by its value-spec's cardinality:
+    one possible value -> constant; two or more -> parameter (regardless of --role requested)."""
+    import scientific_literature as sl
+    w(authoring_db, 'insert $q isa ooevv-quality, has id "q-geno", has name "genotype";')
+    w(authoring_db, 'insert $q isa ooevv-quality, has id "q-spec", has name "organism species";')
+    # 2-value spec (genotype WT|KO) and 1-value spec (species mouse)
+    sl.cmd_ensure_value_spec(types.SimpleNamespace(quality="q-geno", name="WT/KO", scale_type="nominal",
+        values="WT|SIRT3-KO", unit=None, min=None, max=None, definition="d", long_form=None, curie=None))
+    vs_geno = _out(capsys)["value_spec_id"]
+    sl.cmd_ensure_value_spec(types.SimpleNamespace(quality="q-spec", name="mouse", scale_type="nominal",
+        values="mouse", unit=None, min=None, max=None, definition="d", long_form=None, curie=None))
+    vs_spec = _out(capsys)["value_spec_id"]
+    w(authoring_db, 'insert $n isa kefed-model-node, has id "node-geno", has name "mouse";')
+    # ask for CONSTANT on the 2-value genotype spec -> corrected to PARAMETER
+    sl.cmd_add_variable(types.SimpleNamespace(node="node-geno", name="genotype", role="constant",
+        value_spec=vs_geno, quality=None, scale_type=None, values=None, unit=None, min=None, max=None,
+        definition="genotype", long_form=None))
+    d = _out(capsys)
+    assert d["role"] == "parameter", f"genotype (2 values) must be a parameter, got {d['role']}"
+    assert d["role_corrected_from"] == "constant"
+    # species (1 value) stays constant
+    sl.cmd_add_variable(types.SimpleNamespace(node="node-geno", name="species", role="constant",
+        value_spec=vs_spec, quality=None, scale_type=None, values=None, unit=None, min=None, max=None,
+        definition="species", long_form=None))
+    d2 = _out(capsys)
+    assert d2["role"] == "constant" and d2["role_corrected_from"] is None
+
+
 def test_ensure_quality_grounding_is_gated(authoring_db, capsys):
     import scientific_literature as sl
     # with a (verified) curie -> grounded

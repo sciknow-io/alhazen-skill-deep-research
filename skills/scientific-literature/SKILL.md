@@ -146,7 +146,10 @@ A KEfED model (`kefed-model`, authored under a bundle with `add-experiment`) is 
    - A variable **references a shared value-spec**: `add-variable --node <n> --role <r> --value-spec <id>`.
      **Reuse is the default** — `recognize → reuse → extend`: run `list-qualities` / `list-value-specs`
      before creating anything new.
-   - **Role**: `parameter` (varies across arms), `constant` (fixed annotation), `measurement` (the readout).
+   - **Role is fixed by the value-spec's cardinality**, not chosen freely: a value-spec with **one**
+     possible value ⇒ `constant`; **two or more** ⇒ `parameter`. So `genotype {WT|SIRT3-KO}` is **always**
+     a parameter, `species {mouse}` is a constant. `measurement` (the readout) is the third role.
+     `add-variable` derives/auto-corrects parameter-vs-constant from the spec.
    - **Worked example — age.** One quality `age` (PATO:0000011) with canonical value-specs
      `{ordinal young<mature<old}` and `{numeric days, UO:0000033}`. A mouse-genetics paper's `age`
      variable references the ordinal spec; a pharmacokinetics paper's references days. **Same quality,

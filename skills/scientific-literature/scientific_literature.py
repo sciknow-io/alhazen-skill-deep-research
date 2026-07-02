@@ -4097,12 +4097,39 @@ def cmd_link_nodes(args):
     print(json.dumps({"success": True, "from_node": args.from_node, "to_node": args.to_node, "role": args.role}))
 
 
+def _spec_enum_count(tx, scale_id):
+    """Number of enumerated values in a value-spec (nominal/binary allowed-value or ordinal named-rank);
+    0 for numeric/file/composite (no fixed value list)."""
+    for attr in ("ooevv-allowed-value", "ooevv-named-rank"):
+        try:
+            r = list(tx.query(f'match $s isa ooevv-scale, has id "{escape_string(scale_id)}", has {attr} $v; reduce $c = count;').resolve())
+            n = r[0].get("c").get_integer() if r else 0
+            if n > 0:
+                return n
+        except Exception:
+            pass
+    return 0
+
+
+def _role_from_cardinality(requested, enum_n):
+    """A variable's role is fixed by its value-spec's cardinality: exactly one possible value -> constant;
+    two or more (or an unbounded numeric range) -> parameter. 'measurement' (the readout) is respected as-is.
+    Returns (role, corrected_from_or_None)."""
+    if requested == "measurement":
+        return "measurement", None
+    derived = "constant" if enum_n == 1 else "parameter"
+    return derived, (requested if derived != requested else None)
+
+
 def cmd_add_variable(args):
     """Attach an ooevv-variable (role + quality + value-spec) to a kefed-model-node.
 
     PREFERRED: --value-spec <id> references a shared value-specification (its quality is used;
     one scale, many variables). LEGACY: --quality + --scale-type creates an inline scale, which is
-    ALSO registered as a value-spec on the quality (ooevv-quality-scale) so it is never orphaned."""
+    ALSO registered as a value-spec on the quality (ooevv-quality-scale) so it is never orphaned.
+
+    The parameter/constant role is DERIVED from the value-spec's cardinality (one possible value ->
+    constant; two or more -> parameter), so e.g. genotype {WT|SIRT3-KO} is always a parameter."""
     if args.role not in ("parameter", "constant", "measurement"):
         print(json.dumps({"success": False, "error": "--role must be parameter|constant|measurement"})); sys.exit(1)
     node_id = getattr(args, "node", None)
@@ -4113,8 +4140,10 @@ def cmd_add_variable(args):
     var_id = generate_id("scvar"); ts = get_timestamp()
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
     lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
-    var_ins = (f'$v isa ooevv-variable, has id "{var_id}", has name "{escape_string(args.name)}", '
-               f'has ooevv-variable-role "{escape_string(args.role)}"{defn}{lf}, has created-at {ts}')
+    def _var_ins(role):
+        return (f'$v isa ooevv-variable, has id "{var_id}", has name "{escape_string(args.name)}", '
+                f'has ooevv-variable-role "{escape_string(role)}"{defn}{lf}, has created-at {ts}')
+    corrected = None
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             if value_spec:
@@ -4125,11 +4154,12 @@ def cmd_add_variable(args):
                     f'(quality: $q, scale: $s) isa ooevv-quality-scale; fetch {{ "nid": $n.id }};').resolve())
                 if not ok:
                     print(json.dumps({"success": False, "error": "Node not found, or value-spec not found / not linked to a quality"})); sys.exit(1)
+                role, corrected = _role_from_cardinality(args.role, _spec_enum_count(tx, value_spec))
                 tx.query(
                     f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
                     f'$s isa ooevv-scale, has id "{escape_string(value_spec)}"; '
                     f'(quality: $q, scale: $s) isa ooevv-quality-scale; '
-                    f'insert {var_ins}; '
+                    f'insert {_var_ins(role)}; '
                     f'(node: $n, variable: $v) isa kefed-node-variable; '
                     f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
                     f'(measured-variable: $v, quality: $q) isa ooevv-measures;').resolve()
@@ -4145,13 +4175,15 @@ def cmd_add_variable(args):
                     f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; fetch {{ "nid": $n.id }};').resolve())
                 if not ok:
                     print(json.dumps({"success": False, "error": "Node or quality not found"})); sys.exit(1)
+                enum_n = len([a for a in (getattr(args, "values", "") or "").split("|") if a.strip()])
+                role, corrected = _role_from_cardinality(args.role, enum_n)
                 scale_id = generate_id("scvspec")
                 sclause = _scale_attr_clause(args)
                 # inline scale is named + registered as a value-spec on the quality (never orphaned)
                 tx.query(
                     f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
                     f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
-                    f'insert {var_ins}; '
+                    f'insert {_var_ins(role)}; '
                     f'$s isa {_SCALE_TYPES[args.scale_type]}, has id "{scale_id}", '
                     f'has name "{escape_string(args.name)}", has created-at {ts}{sclause}; '
                     f'(node: $n, variable: $v) isa kefed-node-variable; '
@@ -4159,8 +4191,8 @@ def cmd_add_variable(args):
                     f'(measured-variable: $v, quality: $q) isa ooevv-measures; '
                     f'(quality: $q, scale: $s) isa ooevv-quality-scale;').resolve()
                 tx.commit()
-    print(json.dumps({"success": True, "variable_id": var_id, "scale_id": scale_id, "role": args.role,
-                      "value_spec_referenced": bool(value_spec)}))
+    print(json.dumps({"success": True, "variable_id": var_id, "scale_id": scale_id, "role": role,
+                      "role_corrected_from": corrected, "value_spec_referenced": bool(value_spec)}))
 
 
 def cmd_bind_parameter(args):
