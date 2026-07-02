@@ -780,6 +780,8 @@ relation ooevv-measures,                       # ExperimentalVariable measures a
     relates measured-variable, relates quality;
 relation ooevv-has-scale,                      # ExperimentalVariable has exactly one MeasurementScale
     relates scaled-variable, relates scale;
+relation ooevv-quality-scale,                  # a Quality's canonical value-specifications (reusable scales)
+    relates quality, relates scale;            # e.g. age -> {ordinal young<old} + {numeric days}
 relation ooevv-scale-parts,                    # CompositeScale hasParts sub-variables
     relates composite-scale, relates part-variable;
 
@@ -818,6 +820,7 @@ relation ooevv-param-mapping,                  # how a data-transformation maps 
 # ELEMENT - base for everything an element-set contains (concrete parent, not abstract).
 entity ooevv-element sub alh-domain-thing,
     owns ooevv-definition, owns ooevv-long-form, owns scilit-curie,
+    owns scilit-grounding-state, owns scilit-grounding-label, owns scilit-grounding-confidence,
     plays ooevv-set-element:element;
 
 # ELEMENT-SET - reusable vocabulary commitment for a CLASS of experiments (e.g. "RNASeq").
@@ -834,8 +837,8 @@ entity ooevv-material-entity sub ooevv-element,        # obo:BFO_0000040
 
 # QUALITY - curated generic measurand (concentration, signal-intensity, viability...). Reusable vocab.
 entity ooevv-quality sub ooevv-element,
-    owns scilit-grounding-confidence,
-    plays ooevv-measures:quality;
+    plays ooevv-measures:quality,
+    plays ooevv-quality-scale:quality;
 
 # VARIABLE - an ICE that takes values (obo:IAO_0000030); grounds to EFO via kefed-efo-label.
 # ooevv-variable is now pure OOEVV vocabulary: it no longer plays bigraph roles directly.
@@ -844,7 +847,6 @@ entity ooevv-variable sub ooevv-element,               # obo:IAO_0000030
     owns ooevv-variable-role,
     owns ooevv-ice-kind,
     owns kefed-efo-label,
-    owns scilit-grounding-label, owns scilit-grounding-state, owns scilit-grounding-confidence,
     plays kefed-node-variable:variable,
     plays ooevv-measures:measured-variable,
     plays ooevv-has-scale:scaled-variable,
@@ -869,7 +871,8 @@ entity ooevv-data-transformation sub ooevv-process,    # obo:OBI_0200000
 # SCALE - the computational type of a variable's values (keep OOEVV's own taxonomy).
 entity ooevv-scale sub ooevv-element,
     owns ooevv-unit,
-    plays ooevv-has-scale:scale;
+    plays ooevv-has-scale:scale,
+    plays ooevv-quality-scale:scale;
 entity ooevv-nominal-scale sub ooevv-scale, owns ooevv-allowed-value @card(0..);
 entity ooevv-binary-scale sub ooevv-scale, owns ooevv-allowed-value @card(0..);
 entity ooevv-ordinal-scale sub ooevv-scale, owns ooevv-named-rank @card(0..);

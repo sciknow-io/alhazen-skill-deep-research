@@ -3750,8 +3750,23 @@ def _require_definition(args, kind):
         sys.exit(1)
 
 
+def _grounding_clause(args):
+    """Build a grounding attribute clause. Correctness-gated: a curie is recorded ONLY when supplied
+    (the caller attaches it only after verifying the term's definition matches). Otherwise the element
+    is explicitly marked 'ungrounded' (no curie). Never fabricate a grounding."""
+    curie = getattr(args, "curie", None)
+    if curie:
+        c = f', has scilit-curie "{escape_string(curie)}", has scilit-grounding-state "grounded", has scilit-grounding-confidence 1.0'
+        if getattr(args, "grounding_label", None):
+            c += f', has scilit-grounding-label "{escape_string(args.grounding_label)}"'
+        return c, True
+    return ', has scilit-grounding-state "ungrounded"', False
+
+
 def cmd_ensure_quality(args):
-    """Find-or-create a reusable curated ooevv-quality (the generic measurand) by name."""
+    """Find-or-create a reusable curated ooevv-quality (the generic measurand / semantic anchor) by name.
+    Grounding is correctness-gated: pass --curie ONLY for a verified, definition-matching ontology term;
+    otherwise the quality is recorded 'ungrounded' with its local definition."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             ex = list(tx.query(
@@ -3764,10 +3779,82 @@ def cmd_ensure_quality(args):
         qid = generate_id("scqual")
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
         lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+        gc, grounded = _grounding_clause(args)
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $q isa ooevv-quality, has id "{qid}", has name "{escape_string(args.name)}"{defn}{lf};').resolve()
+            tx.query(f'insert $q isa ooevv-quality, has id "{qid}", has name "{escape_string(args.name)}"{defn}{lf}{gc};').resolve()
             tx.commit()
-    print(json.dumps({"success": True, "quality_id": qid, "reused": False}))
+    print(json.dumps({"success": True, "quality_id": qid, "reused": False, "grounded": grounded}))
+
+
+_SCALE_TYPES = {"nominal": "ooevv-nominal-scale", "binary": "ooevv-binary-scale",
+                "ordinal": "ooevv-ordinal-scale", "numeric": "ooevv-numeric-scale",
+                "file": "ooevv-file-scale", "composite": "ooevv-composite-scale"}
+
+
+def _scale_attr_clause(args):
+    """Build the scale-attribute clause (unit/min/max/allowed-value/named-rank) from args."""
+    sattrs = []
+    if getattr(args, "unit", None):
+        sattrs.append(f'has ooevv-unit "{escape_string(args.unit)}"')
+    if args.scale_type == "numeric":
+        if getattr(args, "min", None) is not None: sattrs.append(f'has ooevv-min {float(args.min)}')
+        if getattr(args, "max", None) is not None: sattrs.append(f'has ooevv-max {float(args.max)}')
+    allowed = [a.strip() for a in (getattr(args, "values", "") or "").split("|") if a.strip()]
+    if args.scale_type in ("nominal", "binary"):
+        sattrs += [f'has ooevv-allowed-value "{escape_string(a)}"' for a in allowed]
+    if args.scale_type == "ordinal":
+        sattrs += [f'has ooevv-named-rank "{escape_string(a)}"' for a in allowed]  # order preserved
+    return (", " + ", ".join(sattrs)) if sattrs else ""
+
+
+def cmd_ensure_value_spec(args):
+    """Find-or-create a NAMED, REUSABLE value-specification (ooevv-scale) canonical to a quality,
+    linked via ooevv-quality-scale. Idempotent by (quality, name). A quality thus enumerates its
+    canonical value-specs (e.g. age -> {ordinal young<old} + {numeric days})."""
+    if args.scale_type not in _SCALE_TYPES:
+        print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(_SCALE_TYPES)}"})); sys.exit(1)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            q = list(tx.query(f'match $q isa ooevv-quality, has id "{escape_string(args.quality)}"; fetch {{ "id": $q.id }};').resolve())
+            if not q:
+                print(json.dumps({"success": False, "error": f"Quality not found: {args.quality}"})); sys.exit(1)
+            ex = list(tx.query(
+                f'match $q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
+                f'$s isa ooevv-scale, has name "{escape_string(args.name)}"; '
+                f'(quality: $q, scale: $s) isa ooevv-quality-scale; fetch {{ "id": $s.id }};').resolve())
+        if ex:
+            print(json.dumps({"success": True, "value_spec_id": ex[0]["id"], "reused": True}))
+            return
+        _require_definition(args, "value-spec")
+        vsid = generate_id("scvspec")
+        defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+        lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+        gc, grounded = _grounding_clause(args)
+        sclause = _scale_attr_clause(args)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(
+                f'match $q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
+                f'insert $s isa {_SCALE_TYPES[args.scale_type]}, has id "{vsid}", '
+                f'has name "{escape_string(args.name)}"{defn}{lf}{gc}{sclause}; '
+                f'(quality: $q, scale: $s) isa ooevv-quality-scale;').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "value_spec_id": vsid, "reused": False, "grounded": grounded}))
+
+
+def cmd_list_value_specs(args):
+    """List value-specifications (ooevv-scale linked to a quality), optionally for one quality."""
+    qfilter = f', has id "{escape_string(args.quality)}"' if getattr(args, "quality", None) else ""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            rows = list(tx.query(
+                f'match $q isa ooevv-quality{qfilter}, has name $qn; '
+                f'(quality: $q, scale: $s) isa ooevv-quality-scale; '
+                f'$s has name $sn; '
+                f'fetch {{ "quality": $qn, "quality_id": $q.id, "value_spec": $sn, "value_spec_id": $s.id, '
+                f'"grounding": $s.scilit-grounding-state, "curie": $s.scilit-curie }};').resolve())
+    m = (getattr(args, "match", None) or "").lower()
+    out = [r for r in rows if not m or m in str(r.get("value_spec", "")).lower() or m in str(r.get("quality", "")).lower()]
+    print(json.dumps({"success": True, "count": len(out), "value_specs": out}, indent=2))
 
 
 def cmd_ensure_entity(args):
@@ -4011,54 +4098,69 @@ def cmd_link_nodes(args):
 
 
 def cmd_add_variable(args):
-    """Create an ooevv-variable def (role + quality + scale) and attach it to a
-    kefed-model-node via kefed-node-variable.
-    Retired: --experiment/--template (direct model attachment) + ooevv-produced-by."""
+    """Attach an ooevv-variable (role + quality + value-spec) to a kefed-model-node.
+
+    PREFERRED: --value-spec <id> references a shared value-specification (its quality is used;
+    one scale, many variables). LEGACY: --quality + --scale-type creates an inline scale, which is
+    ALSO registered as a value-spec on the quality (ooevv-quality-scale) so it is never orphaned."""
     if args.role not in ("parameter", "constant", "measurement"):
         print(json.dumps({"success": False, "error": "--role must be parameter|constant|measurement"})); sys.exit(1)
-    scale_types = {"nominal": "ooevv-nominal-scale", "binary": "ooevv-binary-scale",
-                   "ordinal": "ooevv-ordinal-scale", "numeric": "ooevv-numeric-scale",
-                   "file": "ooevv-file-scale", "composite": "ooevv-composite-scale"}
-    if args.scale_type not in scale_types:
-        print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(scale_types)}"})); sys.exit(1)
     node_id = getattr(args, "node", None)
     if not node_id:
         print(json.dumps({"success": False, "error": "Provide --node (kefed-model-node id)"})); sys.exit(1)
+    value_spec = getattr(args, "value_spec", None)
     _require_definition(args, "variable")
-    var_id = generate_id("scvar"); scale_id = generate_id("scscale"); ts = get_timestamp()
+    var_id = generate_id("scvar"); ts = get_timestamp()
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
     lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
-    sattrs = []
-    if getattr(args, "unit", None):
-        sattrs.append(f'has ooevv-unit "{escape_string(args.unit)}"')
-    if args.scale_type == "numeric":
-        if getattr(args, "min", None) is not None: sattrs.append(f'has ooevv-min {float(args.min)}')
-        if getattr(args, "max", None) is not None: sattrs.append(f'has ooevv-max {float(args.max)}')
-    allowed = [a.strip() for a in (getattr(args, "values", "") or "").split("|") if a.strip()]
-    if args.scale_type in ("nominal", "binary"):
-        sattrs += [f'has ooevv-allowed-value "{escape_string(a)}"' for a in allowed]
-    if args.scale_type == "ordinal":
-        sattrs += [f'has ooevv-named-rank "{escape_string(a)}"' for a in allowed]
-    sclause = (", " + ", ".join(sattrs)) if sattrs else ""
+    var_ins = (f'$v isa ooevv-variable, has id "{var_id}", has name "{escape_string(args.name)}", '
+               f'has ooevv-variable-role "{escape_string(args.role)}"{defn}{lf}, has created-at {ts}')
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            ok = list(tx.query(
-                f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
-                f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
-                f'fetch {{ "nid": $n.id }};').resolve())
-            if not ok:
-                print(json.dumps({"success": False, "error": "Node or quality not found"})); sys.exit(1)
-            tx.query(
-                f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
-                f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
-                f'insert $v isa ooevv-variable, has id "{var_id}", has name "{escape_string(args.name)}", '
-                f'has ooevv-variable-role "{escape_string(args.role)}"{defn}{lf}, has created-at {ts}; '
-                f'$s isa {scale_types[args.scale_type]}, has id "{scale_id}", has created-at {ts}{sclause}; '
-                f'(node: $n, variable: $v) isa kefed-node-variable; '
-                f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
-                f'(measured-variable: $v, quality: $q) isa ooevv-measures;').resolve()
-            tx.commit()
-    print(json.dumps({"success": True, "variable_id": var_id, "scale_id": scale_id, "role": args.role}))
+            if value_spec:
+                # reference a shared value-spec; its quality comes via ooevv-quality-scale
+                ok = list(tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$s isa ooevv-scale, has id "{escape_string(value_spec)}"; '
+                    f'(quality: $q, scale: $s) isa ooevv-quality-scale; fetch {{ "nid": $n.id }};').resolve())
+                if not ok:
+                    print(json.dumps({"success": False, "error": "Node not found, or value-spec not found / not linked to a quality"})); sys.exit(1)
+                tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$s isa ooevv-scale, has id "{escape_string(value_spec)}"; '
+                    f'(quality: $q, scale: $s) isa ooevv-quality-scale; '
+                    f'insert {var_ins}; '
+                    f'(node: $n, variable: $v) isa kefed-node-variable; '
+                    f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
+                    f'(measured-variable: $v, quality: $q) isa ooevv-measures;').resolve()
+                tx.commit()
+                scale_id = value_spec
+            else:
+                if args.scale_type not in _SCALE_TYPES:
+                    print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(_SCALE_TYPES)} (or use --value-spec)"})); sys.exit(1)
+                if not getattr(args, "quality", None):
+                    print(json.dumps({"success": False, "error": "Provide --quality (or --value-spec)"})); sys.exit(1)
+                ok = list(tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; fetch {{ "nid": $n.id }};').resolve())
+                if not ok:
+                    print(json.dumps({"success": False, "error": "Node or quality not found"})); sys.exit(1)
+                scale_id = generate_id("scvspec")
+                sclause = _scale_attr_clause(args)
+                # inline scale is named + registered as a value-spec on the quality (never orphaned)
+                tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
+                    f'insert {var_ins}; '
+                    f'$s isa {_SCALE_TYPES[args.scale_type]}, has id "{scale_id}", '
+                    f'has name "{escape_string(args.name)}", has created-at {ts}{sclause}; '
+                    f'(node: $n, variable: $v) isa kefed-node-variable; '
+                    f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
+                    f'(measured-variable: $v, quality: $q) isa ooevv-measures; '
+                    f'(quality: $q, scale: $s) isa ooevv-quality-scale;').resolve()
+                tx.commit()
+    print(json.dumps({"success": True, "variable_id": var_id, "scale_id": scale_id, "role": args.role,
+                      "value_spec_referenced": bool(value_spec)}))
 
 
 def cmd_bind_parameter(args):
@@ -4750,6 +4852,25 @@ def main():
     p.add_argument("--name", required=True, help="Quality name (concentration, signal-intensity...)")
     p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
     p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
+    p.add_argument("--curie", help="VERIFIED ontology curie (e.g. PATO:0000011). Attach ONLY if the term's definition matches; else omit -> stays ungrounded.")
+    p.add_argument("--grounding-label", dest="grounding_label", help="Canonical label of the grounded ontology term")
+
+    p = subparsers.add_parser("ensure-value-spec",
+        help="Find-or-create a named reusable value-specification (scale) that a Quality can take")
+    p.add_argument("--quality", required=True, help="ooevv-quality id (scqual-...) this value-spec is canonical for")
+    p.add_argument("--name", required=True, help="Value-spec name (e.g. 'age (young/old)')")
+    p.add_argument("--scale-type", required=True, dest="scale_type", help="nominal|binary|ordinal|numeric|file|composite")
+    p.add_argument("--values", help="Pipe-separated allowed values (nominal/binary) or ORDERED ranks (ordinal)")
+    p.add_argument("--unit", help="Numeric scale unit")
+    p.add_argument("--min", help="Numeric scale min")
+    p.add_argument("--max", help="Numeric scale max")
+    p.add_argument("--definition", help="Curated definition (undergraduate-level)")
+    p.add_argument("--long-form", dest="long_form")
+    p.add_argument("--curie", help="VERIFIED curie (e.g. unit UO:0000033); attach only if correct, else omit")
+
+    p = subparsers.add_parser("list-value-specs", help="RECOGNITION: list value-specifications (optionally for one quality)")
+    p.add_argument("--quality", help="Filter to one quality id")
+    p.add_argument("--match", help="Case-insensitive substring filter on name")
 
     p = subparsers.add_parser("ensure-entity", help="Find-or-create a reusable curated entity (specificity/material target)")
     p.add_argument("--name", required=True, help="Entity name (SIRT3, dasatinib, HSC...)")
@@ -4798,9 +4919,11 @@ def main():
     p.add_argument("--node", required=True, help="kefed-model-node id to attach the variable to")
     p.add_argument("--name", required=True, help="Variable name")
     p.add_argument("--role", required=True, help="parameter|constant|measurement")
-    p.add_argument("--quality", required=True, help="ooevv-quality id (scqual-...)")
-    p.add_argument("--scale-type", required=True, dest="scale_type",
-        help="nominal|binary|ordinal|numeric|file|composite")
+    p.add_argument("--value-spec", dest="value_spec",
+        help="REFERENCE a shared value-spec id (ooevv-scale). Its quality is used; --quality/--scale-type not needed. Preferred (reuse).")
+    p.add_argument("--quality", help="ooevv-quality id (scqual-...) — required unless --value-spec is given")
+    p.add_argument("--scale-type", dest="scale_type",
+        help="nominal|binary|ordinal|numeric|file|composite — required unless --value-spec is given")
     p.add_argument("--unit", help="Numeric scale unit")
     p.add_argument("--min", help="Numeric scale min")
     p.add_argument("--max", help="Numeric scale max")
@@ -4988,6 +5111,8 @@ def main():
         "add-mechanism": cmd_add_mechanism,
         "ground-bundle": cmd_ground_bundle,
         "ensure-quality": cmd_ensure_quality,
+        "ensure-value-spec": cmd_ensure_value_spec,
+        "list-value-specs": cmd_list_value_specs,
         "ensure-entity": cmd_ensure_entity,
         "add-experiment": cmd_add_experiment,
         "add-entity-node": cmd_add_entity_node,

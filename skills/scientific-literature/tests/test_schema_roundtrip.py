@@ -70,6 +70,30 @@ def test_ooevv_elementset_and_elements(scratch_db):
     assert qr[0]["n"] == "expression level"
 
 
+def test_quality_canonical_value_specs(scratch_db):
+    """A quality enumerates its canonical value-specifications (scales) via ooevv-quality-scale.
+    The SAME quality 'age' has two value-specs: ordinal {young<old} and numeric [days]."""
+    w(scratch_db, 'insert $q isa ooevv-quality, has id "ooevv-qual-age", has name "age",'
+                  '  has ooevv-definition "the age of the organism";')
+    # ordinal value-spec
+    w(scratch_db,
+      'match $q isa ooevv-quality, has id "ooevv-qual-age";'
+      ' insert $s isa ooevv-ordinal-scale, has id "ooevv-vs-age-ordinal", has name "age (young/old)",'
+      '   has ooevv-named-rank "young", has ooevv-named-rank "old";'
+      ' (quality: $q, scale: $s) isa ooevv-quality-scale;')
+    # numeric value-spec (days)
+    w(scratch_db,
+      'match $q isa ooevv-quality, has id "ooevv-qual-age";'
+      ' insert $s isa ooevv-numeric-scale, has id "ooevv-vs-age-days", has name "age (days)",'
+      '   has ooevv-unit "days";'
+      ' (quality: $q, scale: $s) isa ooevv-quality-scale;')
+    rows = r(scratch_db,
+      'match $q isa ooevv-quality, has id "ooevv-qual-age";'
+      ' (quality: $q, scale: $s) isa ooevv-quality-scale; $s has name $n; fetch {"n": $n};')
+    names = sorted(x["n"] for x in rows)
+    assert names == ["age (days)", "age (young/old)"], f"expected 2 canonical value-specs, got {names}"
+
+
 def _seed_elementset(db):
     w(db, 'insert $s isa ooevv-element-set, has id "ooevv-es-x", has name "X";')
 
