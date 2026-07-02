@@ -6,7 +6,7 @@ import { T } from './tokens';
 import { Icon } from './atoms';
 import { withDb, syncDbFromUrl } from './db';
 import { DatabaseSelector } from './database-selector';
-import { StageView } from './stage-view';
+import { StageView, StagePlaceholder } from './stage-view';
 import type { InvestigationDetail, InvestigationPhase, StageDetail } from '@/lib/scientific-literature';
 
 const STAGE_ORDER = ['discovery', 'ingest', 'sensemaking', 'analysis', 'report'];
@@ -14,12 +14,13 @@ const STAGE_LABEL: Record<string, string> = {
   discovery: 'Discovery', ingest: 'Ingestion', sensemaking: 'Sensemaking', analysis: 'Analysis', report: 'Report',
 };
 
-// Investigation shell: a persistent left-nav of iterations → stages, plus the selected
-// stage's content. The active stage is the phase id in the URL hash (shareable).
+// Investigation shell: a persistent left-nav that always shows the five canonical stages per
+// iteration (a stage with no phase record yet is shown muted and renders a "not started"
+// placeholder). The active stage is `<iter>:<kind>` in the URL hash (shareable).
 export function InvestigationShell({ id }: { id: string }) {
   const [inv, setInv] = useState<InvestigationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activePhase, setActivePhase] = useState<string | null>(null);
+  const [active, setActive] = useState<{ iter: number; kind: string } | null>(null);
   const [stage, setStage] = useState<StageDetail | null>(null);
   const [stageLoading, setStageLoading] = useState(false);
 
@@ -31,38 +32,47 @@ export function InvestigationShell({ id }: { id: string }) {
         if (json.error || json.success === false) { setError(json.error || 'not found'); return; }
         setInv(json);
         const phases: InvestigationPhase[] = json.phases || [];
-        const fromHash = typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '';
-        const initial = phases.find((p) => p.id === fromHash)
-          || phases.find((p) => p.phase === 'sensemaking')
-          || phases[0];
-        if (initial) setActivePhase(initial.id);
+        const firstIter = phases.length ? Math.min(...phases.map((p) => p.iteration ?? 1)) : 1;
+        const [hi, hk] = (typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '').split(':');
+        if (hk && STAGE_ORDER.includes(hk)) {
+          setActive({ iter: Number(hi) || firstIter, kind: hk });
+        } else {
+          const sens = phases.find((p) => p.phase === 'sensemaking');
+          if (sens) setActive({ iter: sens.iteration ?? 1, kind: 'sensemaking' });
+          else if (phases[0]) setActive({ iter: phases[0].iteration ?? 1, kind: phases[0].phase });
+          else setActive({ iter: firstIter, kind: 'discovery' });
+        }
       })
       .catch((err) => setError(String(err)));
   }, [id]);
 
-  // group phases by iteration and sort stages canonically
-  const iterations = useMemo(() => {
-    const phases: InvestigationPhase[] = inv?.phases || [];
-    const byIter = new Map<number, InvestigationPhase[]>();
-    for (const p of phases) {
-      const it = p.iteration ?? 1;
-      if (!byIter.has(it)) byIter.set(it, []);
-      byIter.get(it)!.push(p);
-    }
-    for (const list of byIter.values()) list.sort((a, b) => STAGE_ORDER.indexOf(a.phase) - STAGE_ORDER.indexOf(b.phase));
-    return Array.from(byIter.entries()).sort((a, b) => a[0] - b[0]);
+  // (iteration, kind) -> phase record (only the ones that exist)
+  const phaseMap = useMemo(() => {
+    const m = new Map<string, InvestigationPhase>();
+    for (const p of inv?.phases || []) m.set(`${p.iteration ?? 1}:${p.phase}`, p);
+    return m;
   }, [inv]);
 
+  const iterIndices = useMemo(() => {
+    const s = new Set<number>((inv?.phases || []).map((p) => p.iteration ?? 1));
+    if (!s.size) s.add(1);
+    return Array.from(s).sort((a, b) => a - b);
+  }, [inv]);
+
+  const activePhaseId = active ? (phaseMap.get(`${active.iter}:${active.kind}`)?.id ?? null) : null;
+
   useEffect(() => {
-    if (!activePhase) return;
-    if (typeof window !== 'undefined') window.history.replaceState(null, '', `#${activePhase}`);
+    if (!active) return;
+    if (typeof window !== 'undefined') window.history.replaceState(null, '', `#${active.iter}:${active.kind}`);
+    const pid = phaseMap.get(`${active.iter}:${active.kind}`)?.id;
+    if (!pid) { setStage(null); return; }   // not-started stage -> placeholder (no fetch)
     setStageLoading(true);
-    fetch(withDb(`/api/scientific-literature/stage/${activePhase}`))
+    fetch(withDb(`/api/scientific-literature/stage/${pid}`))
       .then((r) => (r.ok ? r.json() : Promise.reject(`API ${r.status}`)))
       .then((json) => setStage(json.error ? null : json))
       .catch(() => setStage(null))
       .finally(() => setStageLoading(false));
-  }, [activePhase]);
+  }, [active, phaseMap]);
 
   return (
     <div style={{ minHeight: '100vh', background: T.bg, color: T.fg, fontFamily: T.sans }}>
@@ -82,27 +92,30 @@ export function InvestigationShell({ id }: { id: string }) {
       {error && <div style={{ maxWidth: 1200, margin: '16px auto', padding: '0 24px', color: '#e05555', fontFamily: T.mono, fontSize: 12 }}>{error}</div>}
 
       <div style={{ maxWidth: 1200, margin: '0 auto', display: 'grid', gridTemplateColumns: '220px 1fr', gap: 20, padding: '20px 24px' }}>
-        {/* left nav */}
+        {/* left nav — always the five canonical stages */}
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 16, alignSelf: 'start' }}>
-          {iterations.map(([iter, phases]) => (
+          {iterIndices.map((iter) => (
             <div key={iter}>
               <div style={{ fontFamily: T.mono, fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: T.fgDim, marginBottom: 6 }}>Iteration {iter}</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {phases.map((p) => {
-                  const active = p.id === activePhase;
+                {STAGE_ORDER.map((kind) => {
+                  const exists = !!phaseMap.get(`${iter}:${kind}`)?.id;
+                  const isActive = active?.iter === iter && active?.kind === kind;
                   return (
                     <button
-                      key={p.id}
-                      onClick={() => setActivePhase(p.id)}
+                      key={kind}
+                      onClick={() => setActive({ iter, kind })}
+                      title={exists ? undefined : 'Not started'}
                       style={{
                         textAlign: 'left', cursor: 'pointer', fontFamily: T.sans, fontSize: 13,
-                        color: active ? T.teal : T.fgDim, background: active ? T.tealDim : 'transparent',
-                        border: `1px solid ${active ? T.borderHi : 'transparent'}`, borderRadius: 3, padding: '6px 10px',
-                        display: 'flex', alignItems: 'center', gap: 8,
+                        color: isActive ? T.teal : exists ? T.fgDim : T.fgFaint,
+                        background: isActive ? T.tealDim : 'transparent',
+                        border: `1px solid ${isActive ? T.borderHi : 'transparent'}`, borderRadius: 3, padding: '6px 10px',
+                        display: 'flex', alignItems: 'center', gap: 8, opacity: exists ? 1 : 0.6,
                       }}
                     >
-                      <span style={{ width: 6, height: 6, borderRadius: 6, background: active ? T.teal : T.fgFaint }} />
-                      {STAGE_LABEL[p.phase] || p.phase}
+                      <span style={{ width: 6, height: 6, borderRadius: 6, background: isActive ? T.teal : exists ? T.fgFaint : 'transparent', border: exists ? 'none' : `1px solid ${T.fgFaint}` }} />
+                      {STAGE_LABEL[kind] || kind}
                     </button>
                   );
                 })}
@@ -114,9 +127,10 @@ export function InvestigationShell({ id }: { id: string }) {
 
         {/* stage content */}
         <main style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-          {stageLoading && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>Loading stage…</span>}
-          {stage && <StageView stage={stage} />}
-          {!stage && !stageLoading && inv && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>Select a stage.</span>}
+          {active && !activePhaseId && <StagePlaceholder kind={active.kind} />}
+          {activePhaseId && stageLoading && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>Loading stage…</span>}
+          {activePhaseId && !stageLoading && stage && <StageView stage={stage} />}
+          {!active && inv && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>Select a stage.</span>}
         </main>
       </div>
     </div>

@@ -25,7 +25,6 @@ export function layerOverviewMermaid(d: PaperCurationDetail): string {
   const no = (b.observations || []).length;
   const nc = (b.reported_claims || []).length;
   const ng = (b.reported_gaps || []).length;
-  const nm = (b.mechanisms || []).length;
   const ne = (b.experiments || []).length;
   const ni = (b.instances || []).length;
   return [
@@ -43,7 +42,6 @@ export function layerOverviewMermaid(d: PaperCurationDetail): string {
     `    CL["${nc} claims"]`,
     `    GP["${ng} gaps"]`,
     `    OB["${no} observations"]`,
-    `    MK["${nm} mechanistic links"]`,
     '  end',
     '  subgraph KEF["④ KEfED / OOEVV"]',
     `    KM["${ne} kefed-model"]`,
@@ -53,11 +51,11 @@ export function layerOverviewMermaid(d: PaperCurationDetail): string {
     '  end',
     '  P --> AR --> FR',
     '  P --> I --> B',
-    '  B --> CL & GP & OB & MK & KM',
+    '  B --> CL & GP & OB & KM',
     '  KM --> KI',
     '  class P,AR,FR raw',
     '  class I,B inv',
-    '  class CL,GP,OB,MK rhet',
+    '  class CL,GP,OB rhet',
     '  class KM kef',
     '  class KI dat',
     CLASSDEFS,
@@ -113,27 +111,6 @@ export function claimObservationMermaid(d: PaperCurationDetail): string {
   }
   if (cIds.length) lines.push(`  class ${cIds.join(',')} rhet`);
   if (oIds.length) lines.push(`  class ${oIds.join(',')} rhet`);
-  lines.push(CLASSDEFS);
-  return lines.join('\n');
-}
-
-export function mechanismMermaid(d: PaperCurationDetail): string {
-  const mechs = (d.bundle || ({} as BundleDetail)).mechanisms || [];
-  if (!mechs.length) return '';
-  const lines: string[] = ['flowchart LR'];
-  const nodes = new Set<string>();
-  const ids: string[] = [];
-  const ensure = (name?: string) => {
-    const label = esc(name || '?');
-    const id = mid(label);
-    if (!nodes.has(id)) { lines.push(`  ${id}["${label}"]`); nodes.add(id); ids.push(id); }
-    return id;
-  };
-  for (const m of mechs) {
-    const s = ensure(m.source), t = ensure(m.target);
-    lines.push(`  ${s} -->|${esc(m.type || 'affects')}| ${t}`);
-  }
-  if (ids.length) lines.push(`  class ${ids.join(',')} rhet`);
   lines.push(CLASSDEFS);
   return lines.join('\n');
 }

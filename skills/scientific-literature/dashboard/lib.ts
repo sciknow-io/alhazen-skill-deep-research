@@ -125,6 +125,7 @@ export interface FacetingNoteDetail {
   script?: string;
   config?: unknown;
   content?: string;
+  plot_code?: string;   // Observable Plot expression (also inside config)
 }
 
 export interface InvestigationCorpusRef {
@@ -366,6 +367,8 @@ export interface RunResult {
   // keyed by output name -> { attr, chars }
   outputs_written: Record<string, { attr: string; chars: number }>;
   outputs_not_persisted: Record<string, unknown>;
+  plot_code?: string;      // Observable Plot expression to render against `data`
+  data?: unknown[];        // terminal output rows for the plot
 }
 
 export async function runFacetingNote(id: string): Promise<RunResult> {
@@ -499,6 +502,8 @@ export interface StageDetail {
   papers?: IngestPaper[];             // ingest
   bundles?: BundleSummary[];          // sensemaking
   pipeline_notes?: Array<{ id: string; name?: string }>; // analysis
+  synthesized_claims?: SynthesizedClaimNode[]; // report
+  citation_impacts?: ImpactNode[];             // report
 }
 
 export async function getStage(phaseId: string, db?: string): Promise<StageDetail> {
@@ -529,4 +534,26 @@ export interface PaperCurationDetail {
 
 export async function getPaperCuration(paperId: string, db?: string): Promise<PaperCurationDetail> {
   return runScilit(['show-paper-curation', '--id', paperId], db) as Promise<PaperCurationDetail>;
+}
+
+// --- Sensemaking linter (curation checks) -------------------------------------
+export interface SensemakingCheck {
+  id: string;
+  name: string;
+  category: string;      // rhetoric | kefed | ooevv | fulltext
+  severity: string;      // high | medium | low
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+  offenders: string[];
+}
+export interface SensemakingChecks {
+  success: boolean;
+  hasCuration: boolean;
+  paper: string;
+  bundle_id?: string;
+  checks: SensemakingCheck[];
+  summary: { passed: number; warned: number; failed: number };
+}
+export async function getSensemakingChecks(paperId: string, db?: string): Promise<SensemakingChecks> {
+  return runScilit(['lint-sensemaking', '--id', paperId], db) as Promise<SensemakingChecks>;
 }

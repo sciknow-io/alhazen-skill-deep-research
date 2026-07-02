@@ -2935,20 +2935,10 @@ def cmd_show_synthesis(args):
                     f'(note: $s, subject: $t) isa alh-aboutness; '
                     f'fetch {{ "curie": $cu, "name": $nm }};').resolve())
                 n["concepts"] = cons
-            edges = list(tx.query(
-                'match '
-                '$s isa scilit-bioentity, has name $sn; '
-                '(classified-entity: $s, type-facet: $st) isa alh-classification; '
-                '$st isa scilit-ontology-term, has scilit-curie $sc; '
-                '$o isa scilit-bioentity, has name $on; '
-                '(classified-entity: $o, type-facet: $ot) isa alh-classification; '
-                '$ot isa scilit-ontology-term, has scilit-curie $oc; '
-                '$r isa scilit-mechanistic-link, links (mech-source: $s, mech-target: $o), '
-                'has scilit-predicate-curie $pc, has scilit-mech-type $mt; '
-                'fetch { "s_name": $sn, "s_curie": $sc, "o_name": $on, "o_curie": $oc, '
-                '"predicate": $pc, "mech_type": $mt };').resolve())
+    # Mechanism edge graph removed from the synthesis view (mechanism is no longer curated/surfaced);
+    # `edges` kept as an empty list for payload back-compat.
     print(json.dumps({"success": True, "investigation": args.id, "question": question,
-                      "synthesis": notes, "edges": edges}, indent=2))
+                      "synthesis": notes, "edges": []}, indent=2))
 
 
 def cmd_survey_entities(args):
@@ -3178,6 +3168,10 @@ def cmd_show_stage(args):
                     f'(phase: $ph, faceting: $fn) isa scilit-phase-faceting; '
                     f'fetch {{ "id": $fn.id, "name": $fn.name }};').resolve())
                 stage["pipeline_notes"] = [{k: v for k, v in f.items() if v is not None} for f in fn]
+            elif kind == "report" and inv_id:
+                # the investigation outcome: synthesized claims (+ evidence warrants) and citation impacts
+                stage["synthesized_claims"] = _load_synthesized_claims(tx, inv_id)
+                stage["citation_impacts"] = _load_impacts(tx, inv_id)
     print(json.dumps({"success": True, **stage}, indent=2))
 
 
@@ -3214,6 +3208,9 @@ def cmd_show_paper_curation(args):
                 return
             bundle_id = b[0]["id"]
             bundle = _load_bundle(tx, bundle_id)
+            # Mechanism graph is no longer part of the sensemaking view — drop it from the
+            # walkthrough payload (schema + show-bundle keep it, dormant).
+            bundle.pop("mechanisms", None)
             fragments = _load_fragments(tx, pid)
             derivations = _load_derivations(tx, pid)
             # claim -> observation grounding edges (scilit-claim-observation)
@@ -3243,6 +3240,171 @@ def cmd_show_paper_curation(args):
         "derivations": derivations, "claim_observations": claim_observations,
         "bundle": bundle, "signatures": signatures,
     }, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Sensemaking linter — verify a paper's KQED/KEfED/OOEVV curation is well-formed
+# so Claude can self-check. Each check returns a finding dict:
+#   {id, name, category, severity, status: pass|warn|fail, detail, offenders:[ids]}
+# SENSEMAKING_CHECKS is the extension point — add checks as the criteria evolve.
+# ---------------------------------------------------------------------------
+
+def _finding(cid, name, category, severity, offenders, ok_detail, bad_detail, warn=False):
+    offenders = [o for o in offenders if o]
+    status = "pass" if not offenders else ("warn" if warn else "fail")
+    detail = ok_detail if not offenders else bad_detail.format(n=len(offenders))
+    return {"id": cid, "name": name, "category": category, "severity": severity,
+            "status": status, "detail": detail, "offenders": offenders[:50]}
+
+
+def _bundle_variables(bundle):
+    """All ooevv-variable briefs across the bundle's experiments."""
+    out = []
+    for e in bundle.get("experiments", []) or []:
+        for p in ((e.get("experiment") or {}).get("processes") or []):
+            out.extend((p.get("parameters") or []) + (p.get("measurements") or []))
+    return out
+
+
+def _chk_has_observations(ctx):
+    obs = ctx["bundle"].get("observations") or []
+    return _finding("has-observations", "Bundle has observations", "rhetoric", "high",
+                    [] if obs else [ctx["bundle"]["id"]], f"{len(obs)} observations",
+                    "no observations in the bundle")
+
+
+def _chk_has_claims(ctx):
+    cl = ctx["bundle"].get("reported_claims") or []
+    return _finding("has-claims", "Bundle has reported claims", "rhetoric", "high",
+                    [] if cl else [ctx["bundle"]["id"]], f"{len(cl)} claims",
+                    "no reported claims in the bundle")
+
+
+def _chk_claims_grounded(ctx):
+    offenders = [c["id"] for c in (ctx["bundle"].get("reported_claims") or [])
+                 if not ctx["claim_obs"].get(c["id"])]
+    return _finding("claims-grounded", "Claims grounded in observations", "rhetoric", "medium",
+                    offenders, "every claim cites >=1 observation",
+                    "{n} claim(s) cite no observation (scilit-claim-observation)", warn=True)
+
+
+def _chk_notes_anchored(ctx):
+    anchored = {d["note"] for d in ctx["derivations"]}
+    notes = ([n["id"] for n in (ctx["bundle"].get("observations") or [])]
+             + [c["id"] for c in (ctx["bundle"].get("reported_claims") or [])]
+             + [g["id"] for g in (ctx["bundle"].get("reported_gaps") or [])])
+    offenders = [nid for nid in notes if nid not in anchored]
+    return _finding("notes-anchored", "Notes span-anchored to full text", "rhetoric", "medium",
+                    offenders, "every claim/gap/observation has a fragment anchor",
+                    "{n} note(s) lack an alh-derivation fragment anchor", warn=True)
+
+
+def _chk_experiments_measurement(ctx):
+    offenders = []
+    for e in ctx["bundle"].get("experiments") or []:
+        has_meas = any((p.get("measurements") for p in ((e.get("experiment") or {}).get("processes") or [])))
+        if not has_meas:
+            offenders.append(e["id"])
+    return _finding("exp-has-measurement", "Experiments declare a measurement", "kefed", "high",
+                    offenders, "every experiment declares >=1 measurement",
+                    "{n} experiment(s) have no measurement variable")
+
+
+def _chk_measurement_signature(ctx):
+    offenders = []
+    for sig in ctx["signatures"].values():
+        for vid, s in (sig or {}).items():
+            if not s.get("index"):
+                offenders.append(vid)
+    return _finding("measurement-signature", "Measurements are indexed (data signature)", "kefed", "medium",
+                    offenders, "every measurement is indexed by >=1 parameter",
+                    "{n} measurement(s) have an empty data signature", warn=True)
+
+
+def _chk_variables_quality_scale(ctx):
+    offenders = [v.get("id") for v in _bundle_variables(ctx["bundle"])
+                 if not (v.get("quality") and v.get("scale"))]
+    return _finding("var-quality-scale", "Variables have quality + value-spec", "ooevv", "high",
+                    offenders, "every variable has a quality and a value-spec",
+                    "{n} variable(s) missing a quality or scale")
+
+
+def _chk_quality_grounding_state(ctx):
+    offenders, seen = [], set()
+    for v in _bundle_variables(ctx["bundle"]):
+        q = v.get("quality") or {}
+        qid = q.get("quality_id") or q.get("quality")
+        if qid and qid not in seen:
+            seen.add(qid)
+            if not q.get("grounding_state"):
+                offenders.append(qid)
+    return _finding("quality-grounding-state", "Qualities carry a grounding state", "ooevv", "low",
+                    offenders, "every quality has grounding-state set",
+                    "{n} quality(ies) have no grounding-state", warn=True)
+
+
+def _chk_instances_cells(ctx):
+    offenders = []
+    for inst in ctx["bundle"].get("instances") or []:
+        for row in inst.get("data") or []:
+            if not row.get("cells"):
+                offenders.append(row.get("id"))
+    return _finding("instance-rows-cells", "Data rows have cells", "kefed", "medium",
+                    offenders, "every data row has >=1 cell", "{n} data row(s) have no cells")
+
+
+def _chk_fragments_located(ctx):
+    offenders = [f["id"] for f in ctx["fragments"] if f.get("offset") is None]
+    return _finding("fragments-located", "Fragments have a resolved offset", "fulltext", "low",
+                    offenders, "every fragment has a character offset",
+                    "{n} fragment(s) could not be located in the full text", warn=True)
+
+
+SENSEMAKING_CHECKS = [
+    _chk_has_observations, _chk_has_claims, _chk_claims_grounded, _chk_notes_anchored,
+    _chk_experiments_measurement, _chk_measurement_signature, _chk_variables_quality_scale,
+    _chk_quality_grounding_state, _chk_instances_cells, _chk_fragments_located,
+]
+
+
+def cmd_lint_sensemaking(args):
+    """Linter over a paper's sensemaking curation (KQED rhetoric + KEfED experiments + OOEVV vocab).
+    Loads the bundle once and runs SENSEMAKING_CHECKS; each finding carries status pass|warn|fail +
+    offending ids so Claude (or the dashboard) can verify the curation is well-formed."""
+    pid = args.id
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            b = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
+                f'(sensemaking: $bn, paper: $p) isa scilit-sensemaking-paper; '
+                f'fetch {{ "id": $bn.id }};').resolve())
+            if not b:
+                print(json.dumps({"success": True, "hasCuration": False, "paper": pid,
+                                  "checks": [], "summary": {"passed": 0, "warned": 0, "failed": 0}}, indent=2))
+                return
+            bundle_id = b[0]["id"]
+            bundle = _load_bundle(tx, bundle_id)
+            fragments = _load_fragments(tx, pid)
+            derivations = _load_derivations(tx, pid)
+            co_rows = list(tx.query(
+                f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
+                f'(sensemaking: $b, reported-claim: $c) isa scilit-sensemaking-reported-claim; '
+                f'(claim: $c, observation: $o) isa scilit-claim-observation; '
+                f'fetch {{ "claim": $c.id, "observation": $o.id }};').resolve())
+            claim_obs = {}
+            for r in co_rows:
+                claim_obs.setdefault(r["claim"], []).append(r["observation"])
+            signatures = {e["id"]: _data_signature(tx, e["id"]) for e in bundle.get("experiments", []) or []}
+    ctx = {"paper": pid, "bundle": bundle, "fragments": fragments, "derivations": derivations,
+           "claim_obs": claim_obs, "signatures": signatures}
+    checks = [fn(ctx) for fn in SENSEMAKING_CHECKS]
+    summary = {
+        "passed": sum(1 for c in checks if c["status"] == "pass"),
+        "warned": sum(1 for c in checks if c["status"] == "warn"),
+        "failed": sum(1 for c in checks if c["status"] == "fail"),
+    }
+    print(json.dumps({"success": True, "hasCuration": True, "paper": pid, "bundle_id": bundle_id,
+                      "checks": checks, "summary": summary}, indent=2))
 
 
 def _render_investigation_md(inv):
@@ -5295,6 +5457,11 @@ def main():
         help="One-shot curation walkthrough payload for a single paper (all layers)")
     p.add_argument("--id", required=True, help="Paper id (scilit-paper-...)")
 
+    # lint-sensemaking (linter: verify a paper's KQED/KEfED/OOEVV curation is well-formed)
+    p = subparsers.add_parser("lint-sensemaking",
+        help="Run curation checks over a paper's sensemaking bundle (pass/warn/fail)")
+    p.add_argument("--id", required=True, help="Paper id (scilit-paper-...)")
+
     # show-bundle
     p = subparsers.add_parser("show-bundle", help="Show one per-paper sensemaking bundle in full")
     p.add_argument("--id", required=True, help="Bundle id (scsense-...)")
@@ -5438,6 +5605,7 @@ def main():
         "list-databases": cmd_list_databases,
         "show-stage": cmd_show_stage,
         "show-paper-curation": cmd_show_paper_curation,
+        "lint-sensemaking": cmd_lint_sensemaking,
         "show-bundle": cmd_show_bundle,
         "show-experiment": cmd_show_experiment,
         "show-template": cmd_show_template,

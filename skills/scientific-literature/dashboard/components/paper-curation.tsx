@@ -1,15 +1,55 @@
 'use client';
 
-import { type ReactNode } from 'react';
+import { type ReactNode, useState, useEffect } from 'react';
 import { T } from './tokens';
 import { Panel } from './atoms';
 import { Mermaid } from './mermaid';
+import { withDb } from './db';
 import {
   layerOverviewMermaid, rawLayerMermaid, investigationSpineMermaid,
-  claimObservationMermaid, mechanismMermaid, kefedModelMermaid,
+  claimObservationMermaid, kefedModelMermaid,
   verticalSliceMermaid, signatureCaption,
 } from './curation-diagrams';
-import type { PaperCurationDetail, OoevvVarBrief, BundleDetail } from '@/lib/scientific-literature';
+import type { PaperCurationDetail, OoevvVarBrief, BundleDetail, SensemakingCheck } from '@/lib/scientific-literature';
+
+// Sensemaking linter panel — fetches lint-sensemaking and shows pass/warn/fail per check so a
+// curator (or Claude) can see whether the paper's KEfED/OOEVV/KQED curation is well-formed.
+function SensemakingChecksPanel({ paperId }: { paperId?: string }) {
+  const [checks, setChecks] = useState<SensemakingCheck[] | null>(null);
+  const [summary, setSummary] = useState<{ passed: number; warned: number; failed: number } | null>(null);
+
+  useEffect(() => {
+    if (!paperId) return;
+    fetch(withDb(`/api/scientific-literature/paper/${paperId}/checks`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (j && j.checks) { setChecks(j.checks); setSummary(j.summary); } })
+      .catch(() => { /* linter unavailable — panel stays quiet */ });
+  }, [paperId]);
+
+  if (!checks) return <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>Running checks…</span>;
+  const color = (s: string) => (s === 'pass' ? T.olive : s === 'warn' ? T.rust : '#e05555');
+  const glyph = (s: string) => (s === 'pass' ? '✓' : s === 'warn' ? '!' : '✗');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {summary && (
+        <div style={{ fontFamily: T.mono, fontSize: 11, color: T.fgDim, marginBottom: 4 }}>
+          <span style={{ color: T.olive }}>{summary.passed} pass</span> · <span style={{ color: T.rust }}>{summary.warned} warn</span> · <span style={{ color: '#e05555' }}>{summary.failed} fail</span>
+        </div>
+      )}
+      {checks.map((c) => (
+        <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '18px 1fr auto', gap: 8, alignItems: 'baseline' }}>
+          <span style={{ color: color(c.status), fontFamily: T.mono, fontWeight: 700 }}>{glyph(c.status)}</span>
+          <div>
+            <span style={{ fontSize: 13, color: T.fg }}>{c.name}</span>
+            <span style={{ marginLeft: 8, fontFamily: T.mono, fontSize: 10, color: T.fgFaint, textTransform: 'uppercase' }}>{c.category}</span>
+            <div style={{ fontSize: 12, color: T.fgDim }}>{c.detail}</div>
+          </div>
+          {c.offenders.length > 0 && <span style={{ fontFamily: T.mono, fontSize: 10.5, color: color(c.status) }}>{c.offenders.length}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ─── small styled table ────────────────────────────────────────
 const thS: React.CSSProperties = {
@@ -66,6 +106,9 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
 
   const sections: { id: string; title: string; body: ReactNode }[] = [];
 
+  // ⓪ sensemaking linter
+  sections.push({ id: 'checks', title: 'Sensemaking checks', body: <SensemakingChecksPanel paperId={data.paper?.id} /> });
+
   // ① overview
   sections.push({ id: 'overview', title: 'The five layers', body: <Mermaid chart={layerOverviewMermaid(data)} /> });
 
@@ -103,7 +146,6 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
       ['sensemaking-observation', (b.observations || []).length, 'measurements-in-context'],
       ['sensemaking-reported-claim', (b.reported_claims || []).length, 'claims the paper asserts'],
       ['sensemaking-reported-gap', (b.reported_gaps || []).length, 'gaps the paper states'],
-      ['sensemaking-mechanism', (b.mechanisms || []).length, 'mechanistic edges'],
       ['sensemaking-experiment', experiments.length + (b.instances || []).length, 'KEfED models + data instances'],
     ].map((r) => [mono(r[0]), r[1], r[2]])} />,
   });
@@ -144,14 +186,9 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
     ),
   });
 
-  // ⑥ mechanism
-  if ((b.mechanisms || []).length) {
-    sections.push({ id: 'mechanism', title: '5 · Mechanism graph', body: <Mermaid chart={mechanismMermaid(data)} /> });
-  }
-
-  // ⑦ KEfED experiments
+  // ⑤ KEfED experiments
   sections.push({
-    id: 'kefed', title: '6 · KEfED experiments as node graphs',
+    id: 'kefed', title: '5 · KEfED experiments as node graphs',
     body: (
       <>
         {experiments.map((e) => (
@@ -166,7 +203,7 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
 
   // ⑧ OOEVV vocabulary
   sections.push({
-    id: 'ooevv', title: '7 · OOEVV vocabulary — qualities, value-specs, variables',
+    id: 'ooevv', title: '6 · OOEVV vocabulary — qualities, value-specs, variables',
     body: (
       <>
         <h4 style={h4S}>Qualities ({qualities.size})</h4>
@@ -186,7 +223,7 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
   // ⑨ data table
   if ((b.instances || []).length) {
     sections.push({
-      id: 'data', title: '8 · Template, instance & the data table',
+      id: 'data', title: '7 · Template, instance & the data table',
       body: (
         <>
           {(b.instances || []).map((inst) => (
@@ -207,11 +244,11 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
   }
 
   // ⑩ vertical slice
-  sections.push({ id: 'slice', title: '9 · The full vertical slice', body: <Mermaid chart={verticalSliceMermaid(data)} /> });
+  sections.push({ id: 'slice', title: '8 · The full vertical slice', body: <Mermaid chart={verticalSliceMermaid(data)} /> });
 
   // ⑪ appendix — entity inventory + id registry
   sections.push({
-    id: 'appendix', title: '10 · Appendix — inventory & id registry',
+    id: 'appendix', title: '9 · Appendix — inventory & id registry',
     body: (
       <>
         <h4 style={h4S}>Entity inventory</h4>
@@ -220,7 +257,6 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
           ['scilit-observation', (b.observations || []).length],
           ['scilit-claim', (b.reported_claims || []).length],
           ['scilit-gap', (b.reported_gaps || []).length],
-          ['scilit-mechanistic-link', (b.mechanisms || []).length],
           ['kefed-model (experiments)', experiments.length],
           ['kefed-instance', (b.instances || []).length],
           ['ooevv-quality', qualities.size],
