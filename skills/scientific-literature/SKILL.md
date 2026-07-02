@@ -116,5 +116,60 @@ Reconciliation prototypes that retrofit existing data to this layout live in
 
 ---
 
+## KEfED Model Authoring — build STRUCTURED, RICH, ACCURATE, EXPRESSIVE models
+
+A KEfED model (`kefed-model`, authored under a bundle with `add-experiment`) is a **graph of
+`kefed-model-node`s** that reconstructs an experiment. Follow these principles:
+
+1. **Reconstruct the real protocol from the paper's Methods.** Read the Experimental Procedures and
+   build the actual material chain — *organism → sample preparation → assay → readout* — including where
+   cells came from and how they were prepared (harvest, sort, lineage-deplete, transduce, transplant,
+   culture...). The **combination of nodes in the graph carries the experimental-design semantics**, not
+   any single node.
+
+2. **Minimal ontological commitment per node; maximum reuse.** Node *definitions* are **generic and
+   reusable** — `experimental mouse`, `bone-marrow harvest`, `competitive transplantation` — NOT
+   `HSC (WT or SIRT3-KO mouse)`. What differentiates *this* experiment lives in the attached **variables +
+   values**, never in node names. Share one OOEVV element wherever the concept genuinely recurs:
+   `add-entity-node` / `add-process` find-or-create a def by name **within the model's element-set**, so
+   pass `add-experiment --element-set <id>` to make a family of experiments **share one element-set** and
+   thus one def per concept (verify: distinct defs ≪ node count).
+
+3. **Variable = a grounded QUALITY + a reusable VALUE-SPECIFICATION.** (`add-variable`)
+   - **Quality** (`ooevv-quality`, `ensure-quality`) = *what* is measured — the semantic anchor. Ground
+     **only** with a verified, definition-matching curie (PATO/EFO); otherwise leave it **ungrounded**
+     (precise local definition, `grounding-state "ungrounded"`, no curie). **Never fabricate a grounding.**
+   - **Value-specification** (`ooevv-scale`, `ensure-value-spec --quality`) = *how* it is measured — the
+     value space + method: `ordinal` ranks, `nominal`/`binary` set, `numeric` unit/range. A quality
+     **enumerates its canonical value-specs** via `ooevv-quality-scale`. The **same quality** can be
+     measured by **different value-specs**.
+   - A variable **references a shared value-spec**: `add-variable --node <n> --role <r> --value-spec <id>`.
+     **Reuse is the default** — `recognize → reuse → extend`: run `list-qualities` / `list-value-specs`
+     before creating anything new.
+   - **Role is fixed by the value-spec's cardinality**, not chosen freely: a value-spec with **one**
+     possible value ⇒ `constant`; **two or more** ⇒ `parameter`. So `genotype {WT|SIRT3-KO}` is **always**
+     a parameter, `species {mouse}` is a constant. `measurement` (the readout) is the third role.
+     `add-variable` derives/auto-corrects parameter-vs-constant from the spec.
+   - **Worked example — age.** One quality `age` (PATO:0000011) with canonical value-specs
+     `{ordinal young<mature<old}` and `{numeric days, UO:0000033}`. A mouse-genetics paper's `age`
+     variable references the ordinal spec; a pharmacokinetics paper's references days. **Same quality,
+     different value-specs** — this is why the value-spec is a property of the quality, selected per variable.
+
+4. **Place variables at the biologically-correct node.** Organism-level (`species`, `genotype`, `age`) on
+   the mouse; cell-level (`cell-population`) on the sorted population; interventions (`construct`,
+   `treatment`) on the transduction / recipient; the **measurement** on the readout assay. Traversing flow
+   edges (`link-nodes --role input|output`) upstream from a measurement collects its indexing
+   parameters — the **data signature** (`show-data-signature`). Rich chains ⇒ rich, correct signatures.
+
+**Grounding policy (non-negotiable):** attach a curie **only** when a real ontology term's definition
+genuinely matches the intended meaning. If a term can't be grounded, or the candidate's definition is
+wrong, **OMIT the grounding** — better ungrounded-with-a-precise-local-definition than wrongly grounded.
+
+**Verb sequence:** `add-experiment [--element-set]` → `add-entity-node --subject` / `add-process --type`
+→ `link-nodes --role input|output` → `ensure-quality [--curie]` → `ensure-value-spec --quality
+--scale-type` → `add-variable --value-spec` → `show-experiment` / `show-data-signature` to verify.
+
+---
+
 **Read USAGE.md before executing commands** -- full command reference, source-specific options,
 query syntax, semantic search workflow, and clustering guide.

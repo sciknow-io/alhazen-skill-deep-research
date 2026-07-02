@@ -1979,26 +1979,51 @@ def _set_investigation_status(tx, inv_id, status):
 
 def _ensure_phase_note(tx, inv_id, phase, content=None, iteration=1):
     """Find-or-create the stage note for (investigation, phase, iteration).
+
+    New wiring: investigation -> scilit-iteration (by index) -> scilit-investigation-phase
+    via scilit-investigation-iteration and scilit-iteration-stage respectively.
+    The iteration is resolved-or-created by scilit-iteration-index.
+
     Returns (phase_id, created)."""
-    existing = list(tx.query(
+    # Step 1: resolve-or-create the scilit-iteration for this investigation + index
+    its = list(tx.query(
         f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
-        f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
-        f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(phase)}", '
-        f'has scilit-iteration-number {int(iteration)}; '
+        f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+        f'$it isa scilit-iteration, has scilit-iteration-index {int(iteration)}; '
+        f'fetch {{ "id": $it.id }};'
+    ).resolve())
+    if its:
+        it_id = its[0]["id"]
+    else:
+        it_id = generate_id("scit")
+        ts = get_timestamp()
+        tx.query(
+            f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+            f'insert $it isa scilit-iteration, has id "{it_id}", '
+            f'has name "Iteration {int(iteration)}", '
+            f'has scilit-iteration-index {int(iteration)}, has created-at {ts}; '
+            f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration;'
+        ).resolve()
+
+    # Step 2: find-or-create the stage note under this iteration
+    existing = list(tx.query(
+        f'match $it isa scilit-iteration, has id "{escape_string(it_id)}"; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+        f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(phase)}"; '
         f'fetch {{ "id": $ph.id }};'
     ).resolve())
     if existing:
         return existing[0]["id"], False
+
     ph_id = generate_id("scphase")
     ts = get_timestamp()
     content_clause = f', has content "{escape_string(content)}"' if content else ""
     tx.query(
-        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'match $it isa scilit-iteration, has id "{escape_string(it_id)}"; '
         f'insert $ph isa scilit-investigation-phase, has id "{ph_id}", '
         f'has name "{escape_string(phase.capitalize())} phase"{content_clause}, '
-        f'has scilit-phase "{escape_string(phase)}", has scilit-iteration-number {int(iteration)}, '
-        f'has created-at {ts}; '
-        f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing;'
+        f'has scilit-phase "{escape_string(phase)}", has created-at {ts}; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage;'
     ).resolve()
     return ph_id, True
 
@@ -2048,13 +2073,18 @@ def _ensure_investigation_collection(driver, inv_id, inv_name=None):
 
 def cmd_create_investigation(args):
     """Create a named investigation note. Typed `corpus` (about a scilit-corpus) or
-    `deep-dive` (about a single focal scilit-paper)."""
+    `deep-dive` (about a single focal scilit-paper).
+
+    Seeds iteration 1 (scilit-iteration index 1 + scilit-investigation-iteration link)
+    in the same transaction so every investigation starts with a first-class iteration.
+    """
     inv_type = getattr(args, "type", None) or "corpus"
     if inv_type not in ("corpus", "deep-dive"):
         print(json.dumps({"success": False,
                           "error": "Invalid --type. Use 'corpus' or 'deep-dive'"}))
         sys.exit(1)
     inv_id = generate_id("scinv")
+    it1_id = generate_id("scit")
     ts = get_timestamp()
     status = args.status or "scoping"
 
@@ -2078,7 +2108,11 @@ def cmd_create_investigation(args):
                     f'has scilit-investigation-status "{escape_string(status)}", '
                     f'has scilit-investigation-type "deep-dive", '
                     f'has created-at {ts}; '
-                    f'(investigation: $inv, focal-paper: $p) isa scilit-investigation-focus;'
+                    f'(investigation: $inv, focal-paper: $p) isa scilit-investigation-focus; '
+                    f'$it isa scilit-iteration, has id "{it1_id}", '
+                    f'has name "Iteration 1", '
+                    f'has scilit-iteration-index 1, has created-at {ts}; '
+                    f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration;'
                 ).resolve()
                 tx.commit()
             coll_id = _ensure_investigation_collection(driver, inv_id, args.name)
@@ -2116,7 +2150,11 @@ def cmd_create_investigation(args):
                 f'has scilit-investigation-status "{escape_string(status)}", '
                 f'has scilit-investigation-type "corpus", '
                 f'has created-at {ts}; '
-                f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope;'
+                f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope; '
+                f'$it isa scilit-iteration, has id "{it1_id}", '
+                f'has name "Iteration 1", '
+                f'has scilit-iteration-index 1, has created-at {ts}; '
+                f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration;'
             ).resolve()
             tx.commit()
     print(json.dumps({
@@ -2190,7 +2228,7 @@ def _load_investigation(tx, inv_id):
         f'"status": $inv.scilit-investigation-status, '
         f'"question": $inv.scilit-investigation-question, '
         f'"type": $inv.scilit-investigation-type, '
-        f'"iteration": $inv.scilit-iteration-number, "created-at": $inv.created-at }};'
+        f'"created-at": $inv.created-at }};'
     ).resolve())
     if not result:
         return None
@@ -2237,15 +2275,24 @@ def _load_investigation(tx, inv_id):
         investigation["collection"] = {"id": coll["id"], "name": coll.get("name"),
                                        "count": len(papers)}
 
-    # Stage notes (iteration-aware). Each carries its scilit-phase + iteration-number.
+    # Stage notes: traverse iteration->stage chain (replaces retired scilit-investigation-phasing).
+    # Path: investigation -> scilit-investigation-iteration -> scilit-iteration (index) ->
+    #       scilit-iteration-stage -> scilit-investigation-phase.
+    # Each phase dict carries 'iteration' from scilit-iteration-index.
     phase_rows = list(tx.query(
         f'match $inv isa scilit-investigation, has id "{esc}"; '
-        f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
-        f'$ph has scilit-phase $phase; '
-        f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, "phase": $phase, '
-        f'"iteration": $ph.scilit-iteration-number, "created-at": $ph.created-at }};'
+        f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+        f'$it isa scilit-iteration, has scilit-iteration-index $idx; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+        f'$ph isa scilit-investigation-phase, has scilit-phase $phase; '
+        f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, '
+        f'"phase": $phase, "idx": $idx, "created-at": $ph.created-at }};'
     ).resolve())
-    phases = [{k: v for k, v in r.items() if v is not None} for r in phase_rows]
+    phases = []
+    for r in phase_rows:
+        ph = {k: v for k, v in r.items() if v is not None and k != "idx"}
+        ph["iteration"] = r.get("idx")
+        phases.append(ph)
     for ph in phases:
         if ph.get("phase") == "analysis":
             fn = list(tx.query(
@@ -2297,8 +2344,9 @@ def _load_bundles(tx, phase_id):
 
 
 def _load_bundle(tx, bundle_id):
-    """Full detail of one per-paper sensemaking bundle: paper, observations (with KEfED
-    design frame), reported-claims (with hinges), reported-gaps."""
+    """Full detail of one per-paper sensemaking bundle: paper, observations (plain
+    sensemaking notes — no kefed_frame), reported-claims (with hinges), reported-gaps.
+    KEfED experiments are read separately via _load_experiments/_load_instances."""
     be = escape_string(bundle_id)
     head = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{be}"; '
@@ -2312,26 +2360,14 @@ def _load_bundle(tx, bundle_id):
         f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "year": $p.scilit-publication-year }};').resolve())
     bundle["paper"] = ({k: v for k, v in paper[0].items() if v is not None} if paper else None)
 
+    # Observations are plain sensemaking notes: no kefed_frame (kefed-observed-via is retired).
+    # KEfED models are now authored separately and attached via scilit-sensemaking-experiment.
     obs_rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{be}"; '
         f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation; '
         f'fetch {{ "id": $o.id, "name": $o.name, "content": $o.content, '
         f'"knowledge_level": $o.scilit-knowledge-level, "bio_scale": $o.scilit-bio-scale }};').resolve())
-    observations = [{k: v for k, v in r.items() if v is not None} for r in obs_rows]
-    for o in observations:
-        frame = list(tx.query(
-            f'match $o isa scilit-observation, has id "{escape_string(o["id"])}"; '
-            f'(observation: $o, model: $m) isa kefed-observed-via; '
-            f'fetch {{ "id": $m.id, "name": $m.name }};').resolve())
-        if frame:
-            fr = {k: v for k, v in frame[0].items() if v is not None}
-            var_rows = list(tx.query(
-                f'match $m isa kefed-model, has id "{escape_string(fr["id"])}"; '
-                f'(model: $m, variable: $v) isa kefed-element; '
-                f'fetch {{ "name": $v.name, "role": $v.kefed-variable-role, "values": $v.kefed-value-set }};').resolve())
-            fr["variables"] = [{k: v for k, v in r.items() if v is not None} for r in var_rows]
-            o["kefed_frame"] = fr
-    bundle["observations"] = observations
+    bundle["observations"] = [{k: v for k, v in r.items() if v is not None} for r in obs_rows]
 
     rc_rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{be}"; '
@@ -2339,8 +2375,9 @@ def _load_bundle(tx, bundle_id):
         f'fetch {{ "id": $c.id, "type": $c.scilit-claim-type, "statement": $c.scilit-claim-statement }};').resolve())
     reported_claims = [{k: v for k, v in r.items() if v is not None} for r in rc_rows]
     for c in reported_claims:
+        # scilit-reported-claim retired -> scilit-claim (Task 3)
         hinges = list(tx.query(
-            f'match $c isa scilit-reported-claim, has id "{escape_string(c["id"])}"; '
+            f'match $c isa scilit-claim, has id "{escape_string(c["id"])}"; '
             f'(hinging-claim: $c, hinged-to: $t) isa scilit-hinge; $t isa scilit-paper; '
             f'fetch {{ "id": $t.id, "name": $t.name, "doi": $t.scilit-doi }};').resolve())
         c["cites"] = [{k: v for k, v in h.items() if v is not None} for h in hinges]
@@ -2371,11 +2408,11 @@ def _tlabel(concept):
 
 
 def _load_experiments(tx, bundle_id):
-    """Legacy inline experiment (kefed-model) protocol graphs grouped under a bundle.
-    Template-based executions are returned separately by _load_instances."""
+    """Inline experiment (kefed-model) protocol graphs grouped under a bundle via
+    scilit-sensemaking-experiment. Template-based instances are returned by _load_instances."""
     rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
-        f'(bundle: $b, experiment: $m) isa ooevv-bundle-experiment; $m isa kefed-model; '
+        f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment; $m isa kefed-model; '
         f'fetch {{ "id": $m.id, "name": $m.name }};').resolve())
     exps = [{k: v for k, v in r.items() if v is not None} for r in rows]
     for e in exps:
@@ -2384,11 +2421,11 @@ def _load_experiments(tx, bundle_id):
 
 
 def _load_instances(tx, bundle_id):
-    """Template instances (kefed-instance) grouped under a bundle: each filled-slot
-    execution with its data spreadsheet, plus the reusable template it instantiates."""
+    """Template instances (kefed-instance) grouped under a bundle via
+    scilit-sensemaking-experiment: each execution with its data spreadsheet."""
     rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
-        f'(bundle: $b, experiment: $i) isa ooevv-bundle-experiment; $i isa kefed-instance; '
+        f'(sensemaking: $b, experiment: $i) isa scilit-sensemaking-experiment; $i isa kefed-instance; '
         f'fetch {{ "id": $i.id }};').resolve())
     insts = []
     seen_tpl = {}
@@ -2406,7 +2443,7 @@ def _load_instances(tx, bundle_id):
 
 def _scale_of(tx, var_id):
     rows = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
         f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
         f'fetch {{ "id": $s.id, "unit": $s.ooevv-unit }};').resolve())
     if not rows:
@@ -2429,13 +2466,15 @@ def _scale_of(tx, var_id):
 
 
 def _var_brief(tx, var_id):
+    """Brief dict for one ooevv-variable: id, name, role, definition, quality, scale, target.
+    Dropped: 'slot' key (ooevv-param-slot / kefed-slot-role / kefed-slot-kind retired in Task 5)."""
     rows = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}", has name $n; '
-        f'fetch {{ "name": $n, "role": $v.kefed-variable-role, '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}", has name $n; '
+        f'fetch {{ "name": $n, "role": $v.ooevv-variable-role, '
         f'"definition": $v.ooevv-definition, "long_form": $v.ooevv-long-form }};').resolve())
     v = {"id": var_id, **({k: x for k, x in rows[0].items() if x is not None} if rows else {})}
     ql = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
         f'(measured-variable: $v, quality: $q) isa ooevv-measures; '
         f'fetch {{ "quality": $q.name, "definition": $q.ooevv-definition, "long_form": $q.ooevv-long-form }};').resolve())
     if ql:
@@ -2443,58 +2482,170 @@ def _var_brief(tx, var_id):
     sc = _scale_of(tx, var_id)
     if sc:
         v["scale"] = sc
+    # ooevv-parameter-target:target-entity is now played by both ooevv-material-entity
+    # (owns ooevv-definition) and kefed-model-node (does not). Query each separately so
+    # TypeDB 3.x type-checking doesn't reject the fetch for kefed-model-node targets.
     tgt = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
+        f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
         f'(targeting-parameter: $v, target-entity: $e) isa ooevv-parameter-target; '
+        f'$e isa ooevv-material-entity; '
         f'fetch {{ "id": $e.id, "name": $e.name, "definition": $e.ooevv-definition, "long_form": $e.ooevv-long-form }};').resolve())
+    if not tgt:
+        tgt = list(tx.query(
+            f'match $v isa ooevv-variable, has id "{escape_string(var_id)}"; '
+            f'(targeting-parameter: $v, target-entity: $e) isa ooevv-parameter-target; '
+            f'$e isa kefed-model-node; '
+            f'fetch {{ "id": $e.id, "name": $e.name }};').resolve())
     if tgt:
         v["target_entity"] = {k: x for k, x in tgt[0].items() if x is not None}
-    # template slot this variable references (specificity deferred to instance binding)
-    slot = list(tx.query(
-        f'match $v isa kefed-variable, has id "{escape_string(var_id)}"; '
-        f'(slotted-variable: $v, slot: $sl) isa ooevv-param-slot; '
-        f'fetch {{ "id": $sl.id, "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind }};').resolve())
-    if slot:
-        v["slot"] = {k: x for k, x in slot[0].items() if x is not None}
     return v
 
 
-def _load_experiment(tx, exp_id, container_type="kefed-model"):
-    """Full protocol graph for one element-set CONTAINER (a kefed-model experiment OR a
-    kefed-template): processes (with hierarchy, input/output entities, bound parameters,
-    produced measurements). Both container types play ooevv-set-process:container."""
+def _load_experiment(tx, exp_id):
+    """Full protocol graph for one kefed-model: nodes (kefed-model-node) with their OOEVV type,
+    input/output flow edges (ooevv-process-input/output node roles), and variables
+    (parameters/measurements) via kefed-node-variable.
+    2b.2 redesign: elements are kefed-model-node (not ooevv-process directly)."""
     esc = escape_string(exp_id)
-    proc_rows = list(tx.query(
-        f'match $m isa {container_type}, has id "{esc}"; '
-        f'(container: $m, contained-process: $p) isa ooevv-set-process; $p has name $pn; '
-        f'fetch {{ "id": $p.id, "name": $pn, "definition": $p.ooevv-definition, "long_form": $p.ooevv-long-form }};').resolve())
-    procs = [{k: v for k, v in r.items() if v is not None} for r in proc_rows]
-    for p in procs:
-        pe = escape_string(p["id"])
+    node_rows = list(tx.query(
+        f'match $m isa kefed-model, has id "{esc}"; '
+        f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; $n has name $nn; '
+        f'fetch {{ "id": $n.id, "name": $nn }};').resolve())
+    nodes = [{k: v for k, v in r.items() if v is not None} for r in node_rows]
+    for p in nodes:
+        ne = escape_string(p["id"])
         try:
-            tlist = list(tx.query(f'match $p isa ooevv-process, has id "{pe}"; select $p;').resolve())
-            p["type"] = _tlabel(tlist[0].get("p")).replace("ooevv-", "") if tlist else None
+            tlist = list(tx.query(
+                f'match $n isa kefed-model-node, has id "{ne}"; '
+                f'(node: $n, node-type: $nt) isa kefed-node-type; select $nt;').resolve())
+            p["type"] = _tlabel(tlist[0].get("nt")).replace("ooevv-", "") if tlist else None
         except Exception:
             p["type"] = None
-        par = list(tx.query(f'match $p isa ooevv-process, has id "{pe}"; '
-                            f'(parent-process: $par, sub-process: $p) isa ooevv-process-decomposition; '
-                            f'fetch {{ "id": $par.id }};').resolve())
-        p["parent"] = par[0]["id"] if par else None
-        p["inputs"] = [r.get("n") for r in tx.query(
-            f'match $p isa ooevv-process, has id "{pe}"; (input-entity: $e, consuming-process: $p) isa ooevv-process-input; '
-            f'$e has name $n; fetch {{ "n": $n }};').resolve()]
-        p["outputs"] = [r.get("n") for r in tx.query(
-            f'match $p isa ooevv-process, has id "{pe}"; (producing-process: $p, output-entity: $e) isa ooevv-process-output; '
-            f'$e has name $n; fetch {{ "n": $n }};').resolve()]
+        p["parent"] = None  # hierarchy lives at OOEVV def level (ooevv-process-decomposition)
+        p["inputs"] = [r.get("src") for r in tx.query(
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(input-node: $src, consuming-node: $n) isa ooevv-process-input; '
+            f'fetch {{ "src": $src.id }};').resolve()]
+        p["outputs"] = [r.get("tgt") for r in tx.query(
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(producing-node: $n, output-node: $tgt) isa ooevv-process-output; '
+            f'fetch {{ "tgt": $tgt.id }};').resolve()]
         pbind = list(tx.query(
-            f'match $p isa ooevv-process, has id "{pe}"; (binding-process: $p, bound-parameter: $v) isa ooevv-parameter-binding; '
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(node: $n, variable: $v) isa kefed-node-variable; '
+            f'$v isa ooevv-variable, has ooevv-variable-role "parameter"; '
             f'fetch {{ "id": $v.id }};').resolve())
         p["parameters"] = [_var_brief(tx, r["id"]) for r in pbind]
         meas = list(tx.query(
-            f'match $p isa ooevv-process, has id "{pe}"; (produced-measurement: $v, terminal-process: $p) isa ooevv-produced-by; '
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(node: $n, variable: $v) isa kefed-node-variable; '
+            f'$v isa ooevv-variable, has ooevv-variable-role "measurement"; '
             f'fetch {{ "id": $v.id }};').resolve())
         p["measurements"] = [_var_brief(tx, r["id"]) for r in meas]
-    return {"id": exp_id, "processes": procs}
+    return {"id": exp_id, "processes": nodes}
+
+
+def _data_signature(tx, model_id):
+    """Compute the data signature for a KEfED model.
+
+    For each measurement-role ooevv-variable attached (via kefed-node-variable) to a node
+    in the model (kefed-model-element), compute its index set = the parameter- and
+    constant-role variables on nodes reachable upstream from the measurement's node.
+
+    Traversal rule (BFS, bounded to model's nodes):
+      Starting from the measurement variable's node, follow flow edges in the UPSTREAM
+      direction to discover all nodes that feed data into the measurement:
+        - ooevv-process-input in reverse: find input-node where consuming-node = current
+        - ooevv-process-output in reverse: find producing-node where output-node = current
+      Collect parameter- and constant-role variables from EVERY visited node (including
+      the measurement's own node). Traversal stops when no new in-model nodes are found.
+
+    Returns:
+        dict: {measurement_var_id: {"name": <name>, "index": [{"id":..., "name":..., "role":...}, ...]}}
+    """
+    esc = escape_string(model_id)
+
+    # 1. Get all node ids in this model (to bound traversal)
+    node_rows = list(tx.query(
+        f'match $m isa kefed-model, has id "{esc}"; '
+        f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+        f'fetch {{ "id": $n.id }};').resolve())
+    model_node_ids = {r["id"] for r in node_rows}
+
+    # 2. Build upstream adjacency map: node_id -> {set of node_ids that feed into it}
+    #    Follow ooevv-process-input (input-node -> consuming-node) backwards.
+    #    Follow ooevv-process-output (producing-node -> output-node) backwards.
+    upstream = {nid: set() for nid in model_node_ids}
+    for nid in model_node_ids:
+        ne = escape_string(nid)
+        for r in tx.query(
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(input-node: $src, consuming-node: $n) isa ooevv-process-input; '
+            f'fetch {{ "src": $src.id }};').resolve():
+            if r["src"] in model_node_ids:
+                upstream[nid].add(r["src"])
+        for r in tx.query(
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(producing-node: $src, output-node: $n) isa ooevv-process-output; '
+            f'fetch {{ "src": $src.id }};').resolve():
+            if r["src"] in model_node_ids:
+                upstream[nid].add(r["src"])
+
+    # 3. Find all measurement variables and their home nodes in this model
+    meas_rows = list(tx.query(
+        f'match $m isa kefed-model, has id "{esc}"; '
+        f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+        f'(node: $n, variable: $v) isa kefed-node-variable; '
+        f'$v isa ooevv-variable, has ooevv-variable-role "measurement"; '
+        f'$v has name $vname; '
+        f'fetch {{ "vid": $v.id, "vname": $vname, "nid": $n.id }};').resolve())
+
+    # 4. For each measurement, BFS upstream and collect parameter/constant variables
+    result = {}
+    for row in meas_rows:
+        vid = row["vid"]
+        vname = row.get("vname", "")
+        start_nid = row["nid"]
+
+        # BFS from start_nid following upstream edges
+        visited = set()
+        queue = [start_nid]
+        while queue:
+            curr = queue.pop(0)
+            if curr in visited:
+                continue
+            visited.add(curr)
+            for parent in upstream.get(curr, set()):
+                if parent not in visited:
+                    queue.append(parent)
+
+        # Collect parameter/constant variables from all visited nodes
+        index = []
+        for node_id in visited:
+            ne = escape_string(node_id)
+            pv_rows = list(tx.query(
+                f'match $n isa kefed-model-node, has id "{ne}"; '
+                f'(node: $n, variable: $pv) isa kefed-node-variable; '
+                f'$pv isa ooevv-variable, has ooevv-variable-role $prole; '
+                f'$pv has name $pvname; '
+                f'fetch {{ "id": $pv.id, "role": $prole, "name": $pvname }};').resolve())
+            for pv in pv_rows:
+                if pv["role"] in ("parameter", "constant"):
+                    index.append({"id": pv["id"], "name": pv.get("name", ""), "role": pv["role"]})
+
+        result[vid] = {"name": vname, "index": index}
+
+    return result
+
+
+def cmd_show_data_signature(args):
+    """Show the data signature (index sets) for each measurement variable in a KEfED model.
+    Prints the signature as a JSON dict: {measurement_var_id: {name, index: [{id, name, role}]}}."""
+    model_id = args.model
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            sig = _data_signature(tx, model_id)
+    print(json.dumps(sig, indent=2))
 
 
 def cmd_show_experiment(args):
@@ -2511,27 +2662,26 @@ def cmd_show_experiment(args):
 
 
 def _load_template(tx, template_id):
-    """Full reusable design: name, definition, declared slots, and the protocol graph
-    (processes + variable definitions) shared by every instance."""
+    """Full reusable design: name and the protocol graph (processes + variable definitions)
+    shared by every instance. Template is a kefed-model with kefed-model-state 'template'.
+    Retired: kefed-template type, kefed-template-slot, kefed-slot-role/kind (Task 8, Jun 2026)."""
     esc = escape_string(template_id)
-    head = list(tx.query(f'match $t isa kefed-template, has id "{esc}"; '
-                         f'fetch {{ "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition, '
-                         f'"long_form": $t.ooevv-long-form }};').resolve())
+    head = list(tx.query(
+        f'match $t isa kefed-model, has id "{esc}", has kefed-model-state "template"; '
+        f'fetch {{ "id": $t.id, "name": $t.name }};').resolve())
     if not head:
         return None
     tpl = {k: v for k, v in head[0].items() if v is not None}
-    slot_rows = list(tx.query(
-        f'match $t isa kefed-template, has id "{esc}"; '
-        f'(template: $t, slot: $sl) isa kefed-template-slot; '
-        f'fetch {{ "id": $sl.id, "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind, '
-        f'"definition": $sl.ooevv-definition, "long_form": $sl.ooevv-long-form }};').resolve())
-    tpl["slots"] = [{k: v for k, v in r.items() if v is not None} for r in slot_rows]
+    # variables via kefed-model-element (replaces retired kefed-element/kefed-template-slot)
+    # variables via model -> kefed-model-element -> kefed-model-node -> kefed-node-variable -> variable
+    # (replaces retired: model -> kefed-model-element -> ooevv-variable directly)
     var_rows = list(tx.query(
-        f'match $t isa kefed-template, has id "{esc}"; '
-        f'(model: $t, variable: $v) isa kefed-element; '
+        f'match $t isa kefed-model, has id "{esc}"; '
+        f'(model: $t, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+        f'(node: $n, variable: $v) isa kefed-node-variable; '
         f'fetch {{ "id": $v.id }};').resolve())
     tpl["variables"] = [_var_brief(tx, r["id"]) for r in var_rows]
-    tpl["graph"] = _load_experiment(tx, template_id, container_type="kefed-template")
+    tpl["graph"] = _load_experiment(tx, template_id)
     return tpl
 
 
@@ -2546,46 +2696,40 @@ def cmd_show_template(args):
 
 
 def _load_instance(tx, instance_id):
-    """One paper's execution of a template: the template ref, slot bindings (slot -> filler entity),
-    and the data rows (cells: per-variable values) each linked to its provenance observation."""
+    """One paper's execution of a template: the template ref (via kefed-model role) and the
+    data rows (cells: per-variable values) each linked to its provenance observation.
+    Retired: ooevv-slot-binding, kefed-slot-role/kind, kefed-variable-role (Task 8, Jun 2026)."""
     esc = escape_string(instance_id)
     head = list(tx.query(f'match $i isa kefed-instance, has id "{esc}"; '
                          f'fetch {{ "id": $i.id, "name": $i.name }};').resolve())
     if not head:
         return None
     inst = {k: v for k, v in head[0].items() if v is not None}
+    # template ref: kefed-instance-of role renamed template -> model (Task 8)
     tpl = list(tx.query(
         f'match $i isa kefed-instance, has id "{esc}"; '
-        f'(instance: $i, template: $t) isa ooevv-instance-of; '
+        f'(instance: $i, model: $t) isa kefed-instance-of; '
         f'fetch {{ "id": $t.id, "name": $t.name }};').resolve())
     inst["template"] = ({k: v for k, v in tpl[0].items() if v is not None} if tpl else None)
-    # slot bindings: slot (role/kind) -> filler entity
-    bind_rows = list(tx.query(
-        f'match $i isa kefed-instance, has id "{esc}"; '
-        f'$r isa ooevv-slot-binding, links (instance: $i, slot: $sl, filler: $e); '
-        f'$sl has kefed-slot-role $role; $e has name $en; '
-        f'fetch {{ "slot": $sl.id, "role": $role, "kind": $sl.kefed-slot-kind, '
-        f'"entity_id": $e.id, "entity": $en, '
-        f'"entity_long_form": $e.ooevv-long-form, "entity_definition": $e.ooevv-definition }};').resolve())
-    inst["bindings"] = [{k: v for k, v in r.items() if v is not None} for r in bind_rows]
-    # data rows
+    # data rows (kefed-instance-datum / kefed-cell / kefed-datum-observation unchanged)
     datum_rows = list(tx.query(
         f'match $i isa kefed-instance, has id "{esc}"; '
-        f'(instance: $i, datum: $d) isa ooevv-instance-datum; '
+        f'(instance: $i, datum: $d) isa kefed-instance-datum; '
         f'fetch {{ "id": $d.id }};').resolve())
     data = []
     for dr in datum_rows:
         did = dr["id"]; de = escape_string(did)
+        # cell variable role: kefed-variable-role -> ooevv-variable-role (Task 8)
         cells = list(tx.query(
-            f'match $d isa ooevv-datum, has id "{de}"; '
-            f'$c isa ooevv-cell, links (datum: $d, cell-variable: $v), has ooevv-cell-value $val; '
-            f'$v has name $vn, has kefed-variable-role $vr; '
+            f'match $d isa kefed-row, has id "{de}"; '
+            f'$c isa kefed-cell, links (datum: $d, cell-variable: $v), has kefed-cell-value $val; '
+            f'$v has name $vn, has ooevv-variable-role $vr; '
             f'fetch {{ "variable": $v.id, "name": $vn, "role": $vr, "value": $val, '
-            f'"number": $c.ooevv-cell-number }};').resolve())
+            f'"number": $c.kefed-cell-number }};').resolve())
         row = {"id": did, "cells": [{k: v for k, v in c.items() if v is not None} for c in cells]}
         obs = list(tx.query(
-            f'match $d isa ooevv-datum, has id "{de}"; '
-            f'(datum: $d, observation: $o) isa ooevv-datum-observation; '
+            f'match $d isa kefed-row, has id "{de}"; '
+            f'(datum: $d, observation: $o) isa kefed-datum-observation; '
             f'fetch {{ "id": $o.id, "name": $o.name, "content": $o.content }};').resolve())
         if obs:
             row["observation"] = {k: v for k, v in obs[0].items() if v is not None}
@@ -2632,7 +2776,7 @@ def _load_synthesized_claims(tx, inv_id):
             inst = list(tx.query(
                 f'match $e isa scilit-evidence, has id "{escape_string(w["id"])}"; '
                 f'(evidence: $e, grounding-instance: $i) isa scilit-evidence-instance; '
-                f'(bundle: $b, experiment: $i) isa ooevv-bundle-experiment; '
+                f'(sensemaking: $b, experiment: $i) isa scilit-sensemaking-experiment; '
                 f'(sensemaking: $b, paper: $p) isa scilit-sensemaking-paper; '
                 f'fetch {{ "id": $i.id, "name": $i.name, "bundle": $b.id, "paper": $p.name }};').resolve())
             w["grounding_instances"] = [{k: v for k, v in g.items() if v is not None} for g in inst]
@@ -2984,7 +3128,12 @@ def cmd_export_investigation(args):
 
 
 def cmd_record_phase(args):
-    """Upsert a phase note (one per investigation+phase); optionally advance status."""
+    """Upsert a phase note (one per investigation+phase+iteration); optionally advance status.
+
+    Uses the iteration path: resolve-or-create scilit-iteration (by index) under the
+    investigation, then resolve-or-create the scilit-investigation-phase under that iteration
+    via scilit-iteration-stage. Content is set during creation or updated on upsert.
+    """
     if args.phase not in INVESTIGATION_PHASES:
         print(json.dumps({"success": False,
                           "error": f"Invalid phase. Use one of: {', '.join(INVESTIGATION_PHASES)}"}))
@@ -3000,33 +3149,29 @@ def cmd_record_phase(args):
                 sys.exit(1)
 
             iteration = int(getattr(args, "iteration", 1) or 1)
-            existing = list(tx.query(
-                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
-                f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
-                f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(args.phase)}", '
-                f'has scilit-iteration-number {iteration}; '
-                f'fetch {{ "id": $ph.id }};'
-            ).resolve())
+            # _ensure_phase_note handles resolve-or-create for both the iteration and the phase.
+            # Pass content so it is set atomically during creation.
+            ph_id, created = _ensure_phase_note(
+                tx, args.investigation, args.phase, args.content, iteration
+            )
+            action = "created" if created else "updated"
 
-            if existing:
-                ph_id = existing[0]["id"]
-                has_content = list(tx.query(
-                    f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}", '
-                    f'has content $c; fetch {{ "c": $c }};'
-                ).resolve())
-                if has_content:
-                    tx.query(
+            if not created:
+                # Phase already existed — update its content (delete old value, insert new).
+                if args.content is not None:
+                    has_content = list(tx.query(
                         f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}", '
-                        f'has content $old; delete has $old of $ph;'
+                        f'has content $c; fetch {{ "c": $c }};'
+                    ).resolve())
+                    if has_content:
+                        tx.query(
+                            f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}", '
+                            f'has content $old; delete has $old of $ph;'
+                        ).resolve()
+                    tx.query(
+                        f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}"; '
+                        f'insert $ph has content "{escape_string(args.content)}";'
                     ).resolve()
-                tx.query(
-                    f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}"; '
-                    f'insert $ph has content "{escape_string(args.content)}";'
-                ).resolve()
-                action = "updated"
-            else:
-                ph_id, _ = _ensure_phase_note(tx, args.investigation, args.phase, args.content, iteration)
-                action = "created"
 
             if args.status:
                 _set_investigation_status(tx, args.investigation, args.status)
@@ -3241,12 +3386,12 @@ def cmd_add_evidence(args):
             linked = 0
             for gid in ground_ids:
                 rc = list(tx.query(
-                    f'match $rc isa scilit-reported-claim, has id "{escape_string(gid)}"; '
+                    f'match $rc isa scilit-claim, has id "{escape_string(gid)}"; '
                     f'fetch {{ "id": $rc.id }};').resolve())
                 if rc:
                     tx.query(
                         f'match $ev isa scilit-evidence, has id "{ev_id}"; '
-                        f'$rc isa scilit-reported-claim, has id "{escape_string(gid)}"; '
+                        f'$rc isa scilit-claim, has id "{escape_string(gid)}"; '
                         f'insert (evidence: $ev, ground-claim: $rc) isa scilit-evidence-grounds;'
                     ).resolve()
                     linked += 1
@@ -3269,6 +3414,19 @@ def cmd_add_evidence(args):
                       "instances_linked": inst_linked}, indent=2))
 
 
+def _paper_has_fulltext(driver, paper_id):
+    """True iff the paper has an alh-representation to a fulltext artifact
+    (an alh-artifact bearing scilit-fulltext-kind, e.g. scilit-pdf-fulltext /
+    scilit-jats-fulltext). This is the marker that fetch-pdf/full-text ingest ran."""
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+        rows = list(tx.query(
+            f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+            f'$a isa alh-artifact, has scilit-fulltext-kind $k; '
+            f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+            f'fetch {{ "k": $k }};').resolve())
+    return bool(rows)
+
+
 def cmd_create_bundle(args):
     """Create a per-paper sensemaking bundle for a paper, in an investigation's sensemaking
     stage (a single-paper KQED run persists into THIS, not its own investigation)."""
@@ -3277,6 +3435,14 @@ def cmd_create_bundle(args):
         paper_id = _resolve_paper_arg(driver, args.paper)
         if not paper_id:
             print(json.dumps({"success": False, "error": f"Could not resolve paper: {args.paper}"}))
+            sys.exit(1)
+        # KQED ingestion requires the paper's full text -- you cannot sense-make what you
+        # haven't got. Refuse until fetch-pdf has attached a fulltext artifact.
+        if not _paper_has_fulltext(driver, paper_id):
+            print(json.dumps({"success": False,
+                              "error": f"KQED ingestion blocked: paper {paper_id} has no full text. "
+                                       f"Run 'fetch-pdf --id {paper_id}' (or 'fetch-pdf --id {paper_id} "
+                                       f"--file <pdf>') first."}))
             sys.exit(1)
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             inv = list(tx.query(
@@ -3303,21 +3469,19 @@ def cmd_create_bundle(args):
 
 
 def cmd_add_observation(args):
-    """Add a scilit-observation (measurement-in-context) to a sensemaking bundle. With
-    --experiment-type (+ optional --variables JSON), also builds its KEfED design frame:
-    a kefed-model named by the experiment type, with typed kefed-variables
-    (parameter|constant|measurement), linked via kefed-observed-via."""
+    """Add a scilit-observation (measurement-in-context) to a sensemaking bundle.
+
+    Inserts a scilit-observation (knowledge-level, bio-scale) threaded under the
+    scilit-paper-sensemaking bundle via scilit-sensemaking-observation.
+
+    The KEfED experiment frame (kefed-model + ooevv-variable bigraph) is authored
+    SEPARATELY via cmd_add_experiment / cmd_add_variable; this handler no longer
+    builds it. The --experiment-type and --variables flags are accepted but ignored
+    so that existing call sites do not error on unrecognised arguments.
+    """
     obs_id = generate_id("scobs")
     ts = get_timestamp()
     name = (args.name or args.statement)[:60]
-    variables = []
-    if getattr(args, "variables", None):
-        try:
-            variables = json.loads(args.variables)
-        except Exception:
-            print(json.dumps({"success": False, "error": "--variables must be JSON list of {name,role,values?,efo?}"}))
-            sys.exit(1)
-    model_id = None
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             b = list(tx.query(
@@ -3334,32 +3498,8 @@ def cmd_add_observation(args):
                 f'has scilit-bio-scale "{escape_string(args.bio_scale)}", has created-at {ts}; '
                 f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation;'
             ).resolve()
-            if getattr(args, "experiment_type", None):
-                model_id = generate_id("sckm")
-                tx.query(
-                    f'match $o isa scilit-observation, has id "{obs_id}"; '
-                    f'insert $m isa kefed-model, has id "{model_id}", '
-                    f'has name "{escape_string(args.experiment_type)}", has created-at {ts}; '
-                    f'(observation: $o, model: $m) isa kefed-observed-via;'
-                ).resolve()
-                for v in variables:
-                    vid = generate_id("scvar")
-                    opt = ""
-                    if v.get("values"):
-                        opt += f', has kefed-value-set "{escape_string(str(v["values"]))}"'
-                    if v.get("efo"):
-                        opt += f', has kefed-efo-label "{escape_string(str(v["efo"]))}"'
-                    tx.query(
-                        f'match $m isa kefed-model, has id "{model_id}"; '
-                        f'insert $v isa kefed-variable, has id "{vid}", '
-                        f'has name "{escape_string(str(v.get("name", "var")))}", '
-                        f'has kefed-variable-role "{escape_string(str(v.get("role", "measurement")))}"{opt}, '
-                        f'has created-at {ts}; '
-                        f'(model: $m, variable: $v) isa kefed-element;'
-                    ).resolve()
             tx.commit()
-    print(json.dumps({"success": True, "observation_id": obs_id, "bundle": args.bundle,
-                      "kefed_model": model_id, "variables": len(variables)}, indent=2))
+    print(json.dumps({"success": True, "observation_id": obs_id, "bundle": args.bundle}, indent=2))
 
 
 def cmd_add_mechanism(args):
@@ -3395,7 +3535,7 @@ def cmd_add_mechanism(args):
                     conf = f', has confidence {float(args.confidence)}'
                 except ValueError:
                     conf = ""
-            claim_match = (f'$cl isa scilit-reported-claim, has id "{escape_string(args.claim)}"; '
+            claim_match = (f'$cl isa scilit-claim, has id "{escape_string(args.claim)}"; '
                            if getattr(args, "claim", None) else "")
             claim_insert = ('(claim: $cl, mechanism: $ml) isa scilit-claim-mechanism; '
                             if getattr(args, "claim", None) else "")
@@ -3422,7 +3562,8 @@ def cmd_ground_bundle(args):
             pol = list(tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{bid}"; '
                 f'(phase: $ph, sensemaking: $b) isa scilit-phase-sensemaking; '
-                f'(investigation: $inv, phase: $ph) isa scilit-investigation-phasing; '
+                f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+                f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
                 f'(investigation: $inv, policy: $pp) isa scilit-investigation-grounding; '
                 f'fetch {{ "content": $pp.content }};').resolve())
             if not pol or not pol[0].get("content"):
@@ -3439,16 +3580,19 @@ def cmd_ground_bundle(args):
             gfilter_v = "" if reground else "not { $v has scilit-grounding-state $g; }"
             gfilter_e = "" if reground else "not { $e has scilit-grounding-state $g; }"
             # collect targets: (typelabel, id, name)
+            # Variables: bundle -> scilit-sensemaking-experiment -> kefed-model
+            #            -> kefed-model-element -> ooevv-variable
             targets = {}
             var_rows = list(tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{bid}"; '
-                f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation; '
-                f'(observation: $o, model: $m) isa kefed-observed-via; '
-                f'(model: $m, variable: $v) isa kefed-element; $v has name $nm; '
+                f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment; '
+                f'$m isa kefed-model; '
+                f'(model: $m, element: $v) isa kefed-model-element; '
+                f'$v isa ooevv-variable, has name $nm; '
                 f'{gfilter_v} '
                 f'fetch {{ "id": $v.id, "name": $nm }};').resolve())
             for r in var_rows:
-                targets[r["id"]] = ("kefed-variable", r["name"])
+                targets[r["id"]] = ("ooevv-variable", r["name"])
             for role in ("mech-source", "mech-target"):
                 ent_rows = list(tx.query(
                     f'match $b isa scilit-paper-sensemaking, has id "{bid}"; '
@@ -3512,7 +3656,7 @@ def cmd_ground_bundle(args):
 
 
 def cmd_add_reported_claim(args):
-    """Add a scilit-reported-claim (asserted within the paper) to a sensemaking bundle.
+    """Add a scilit-claim (asserted within the paper) to a sensemaking bundle.
     Support: --cites <paper ids> (citation hinges) and/or --observations <obs ids> (internal)."""
     if args.type not in CLAIM_TYPES:
         print(json.dumps({"success": False,
@@ -3535,19 +3679,19 @@ def cmd_add_reported_claim(args):
                 sys.exit(1)
             tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'insert $cl isa scilit-reported-claim, has id "{claim_id}", has name "{escape_string(name)}", '
+                f'insert $cl isa scilit-claim, has id "{claim_id}", has name "{escape_string(name)}", '
                 f'has scilit-claim-type "{escape_string(args.type)}", '
                 f'has scilit-claim-statement "{escape_string(args.statement)}"{role_clause}, has created-at {ts}; '
                 f'(sensemaking: $b, reported-claim: $cl) isa scilit-sensemaking-reported-claim;'
             ).resolve()
             for oid in obs_ids:
                 tx.query(
-                    f'match $cl isa scilit-reported-claim, has id "{claim_id}"; '
+                    f'match $cl isa scilit-claim, has id "{claim_id}"; '
                     f'$o isa scilit-observation, has id "{escape_string(oid)}"; '
-                    f'insert (reported-claim: $cl, observation: $o) isa scilit-claim-observation;').resolve()
+                    f'insert (claim: $cl, observation: $o) isa scilit-claim-observation;').resolve()
             for pid in cite_ids:
                 tx.query(
-                    f'match $cl isa scilit-reported-claim, has id "{claim_id}"; '
+                    f'match $cl isa scilit-claim, has id "{claim_id}"; '
                     f'$t isa scilit-paper, has id "{escape_string(pid)}"; '
                     f'insert (hinging-claim: $cl, hinged-to: $t) isa scilit-hinge;').resolve()
             tx.commit()
@@ -3556,7 +3700,7 @@ def cmd_add_reported_claim(args):
 
 
 def cmd_add_reported_gap(args):
-    """Add a scilit-reported-gap (a gap stated within the paper) to a sensemaking bundle."""
+    """Add a scilit-gap (a gap stated within the paper) to a sensemaking bundle."""
     gap_id = generate_id("scgap")
     ts = get_timestamp()
     name = args.statement[:60]
@@ -3570,7 +3714,7 @@ def cmd_add_reported_gap(args):
                 sys.exit(1)
             tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'insert $g isa scilit-reported-gap, has id "{gap_id}", has name "{escape_string(name)}", '
+                f'insert $g isa scilit-gap, has id "{gap_id}", has name "{escape_string(name)}", '
                 f'has content "{escape_string(args.statement)}", '
                 f'has scilit-knowledge-goal "{escape_string(args.goal)}", has created-at {ts}; '
                 f'(sensemaking: $b, reported-gap: $g) isa scilit-sensemaking-reported-gap;'
@@ -3606,8 +3750,23 @@ def _require_definition(args, kind):
         sys.exit(1)
 
 
+def _grounding_clause(args):
+    """Build a grounding attribute clause. Correctness-gated: a curie is recorded ONLY when supplied
+    (the caller attaches it only after verifying the term's definition matches). Otherwise the element
+    is explicitly marked 'ungrounded' (no curie). Never fabricate a grounding."""
+    curie = getattr(args, "curie", None)
+    if curie:
+        c = f', has scilit-curie "{escape_string(curie)}", has scilit-grounding-state "grounded", has scilit-grounding-confidence 1.0'
+        if getattr(args, "grounding_label", None):
+            c += f', has scilit-grounding-label "{escape_string(args.grounding_label)}"'
+        return c, True
+    return ', has scilit-grounding-state "ungrounded"', False
+
+
 def cmd_ensure_quality(args):
-    """Find-or-create a reusable curated ooevv-quality (the generic measurand) by name."""
+    """Find-or-create a reusable curated ooevv-quality (the generic measurand / semantic anchor) by name.
+    Grounding is correctness-gated: pass --curie ONLY for a verified, definition-matching ontology term;
+    otherwise the quality is recorded 'ungrounded' with its local definition."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             ex = list(tx.query(
@@ -3620,10 +3779,82 @@ def cmd_ensure_quality(args):
         qid = generate_id("scqual")
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
         lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+        gc, grounded = _grounding_clause(args)
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $q isa ooevv-quality, has id "{qid}", has name "{escape_string(args.name)}"{defn}{lf};').resolve()
+            tx.query(f'insert $q isa ooevv-quality, has id "{qid}", has name "{escape_string(args.name)}"{defn}{lf}{gc};').resolve()
             tx.commit()
-    print(json.dumps({"success": True, "quality_id": qid, "reused": False}))
+    print(json.dumps({"success": True, "quality_id": qid, "reused": False, "grounded": grounded}))
+
+
+_SCALE_TYPES = {"nominal": "ooevv-nominal-scale", "binary": "ooevv-binary-scale",
+                "ordinal": "ooevv-ordinal-scale", "numeric": "ooevv-numeric-scale",
+                "file": "ooevv-file-scale", "composite": "ooevv-composite-scale"}
+
+
+def _scale_attr_clause(args):
+    """Build the scale-attribute clause (unit/min/max/allowed-value/named-rank) from args."""
+    sattrs = []
+    if getattr(args, "unit", None):
+        sattrs.append(f'has ooevv-unit "{escape_string(args.unit)}"')
+    if args.scale_type == "numeric":
+        if getattr(args, "min", None) is not None: sattrs.append(f'has ooevv-min {float(args.min)}')
+        if getattr(args, "max", None) is not None: sattrs.append(f'has ooevv-max {float(args.max)}')
+    allowed = [a.strip() for a in (getattr(args, "values", "") or "").split("|") if a.strip()]
+    if args.scale_type in ("nominal", "binary"):
+        sattrs += [f'has ooevv-allowed-value "{escape_string(a)}"' for a in allowed]
+    if args.scale_type == "ordinal":
+        sattrs += [f'has ooevv-named-rank "{escape_string(a)}"' for a in allowed]  # order preserved
+    return (", " + ", ".join(sattrs)) if sattrs else ""
+
+
+def cmd_ensure_value_spec(args):
+    """Find-or-create a NAMED, REUSABLE value-specification (ooevv-scale) canonical to a quality,
+    linked via ooevv-quality-scale. Idempotent by (quality, name). A quality thus enumerates its
+    canonical value-specs (e.g. age -> {ordinal young<old} + {numeric days})."""
+    if args.scale_type not in _SCALE_TYPES:
+        print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(_SCALE_TYPES)}"})); sys.exit(1)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            q = list(tx.query(f'match $q isa ooevv-quality, has id "{escape_string(args.quality)}"; fetch {{ "id": $q.id }};').resolve())
+            if not q:
+                print(json.dumps({"success": False, "error": f"Quality not found: {args.quality}"})); sys.exit(1)
+            ex = list(tx.query(
+                f'match $q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
+                f'$s isa ooevv-scale, has name "{escape_string(args.name)}"; '
+                f'(quality: $q, scale: $s) isa ooevv-quality-scale; fetch {{ "id": $s.id }};').resolve())
+        if ex:
+            print(json.dumps({"success": True, "value_spec_id": ex[0]["id"], "reused": True}))
+            return
+        _require_definition(args, "value-spec")
+        vsid = generate_id("scvspec")
+        defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+        lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+        gc, grounded = _grounding_clause(args)
+        sclause = _scale_attr_clause(args)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(
+                f'match $q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
+                f'insert $s isa {_SCALE_TYPES[args.scale_type]}, has id "{vsid}", '
+                f'has name "{escape_string(args.name)}"{defn}{lf}{gc}{sclause}; '
+                f'(quality: $q, scale: $s) isa ooevv-quality-scale;').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "value_spec_id": vsid, "reused": False, "grounded": grounded}))
+
+
+def cmd_list_value_specs(args):
+    """List value-specifications (ooevv-scale linked to a quality), optionally for one quality."""
+    qfilter = f', has id "{escape_string(args.quality)}"' if getattr(args, "quality", None) else ""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            rows = list(tx.query(
+                f'match $q isa ooevv-quality{qfilter}, has name $qn; '
+                f'(quality: $q, scale: $s) isa ooevv-quality-scale; '
+                f'$s has name $sn; '
+                f'fetch {{ "quality": $qn, "quality_id": $q.id, "value_spec": $sn, "value_spec_id": $s.id, '
+                f'"grounding": $s.scilit-grounding-state, "curie": $s.scilit-curie }};').resolve())
+    m = (getattr(args, "match", None) or "").lower()
+    out = [r for r in rows if not m or m in str(r.get("value_spec", "")).lower() or m in str(r.get("quality", "")).lower()]
+    print(json.dumps({"success": True, "count": len(out), "value_specs": out}, indent=2))
 
 
 def cmd_ensure_entity(args):
@@ -3649,162 +3880,353 @@ def cmd_ensure_entity(args):
     print(json.dumps({"success": True, "entity_id": eid, "reused": False}))
 
 
+def _model_elementset(tx, model_id, model_name=""):
+    """Within a WRITE transaction: return the element-set id linked to model_id via
+    kefed-model-elementset, creating and linking a fresh ooevv-element-set if absent."""
+    rows = list(tx.query(
+        f'match $m isa kefed-model, has id "{escape_string(model_id)}"; '
+        f'(model: $m, element-set: $es) isa kefed-model-elementset; '
+        f'fetch {{"esid": $es.id}};').resolve())
+    if rows:
+        return rows[0]["esid"]
+    eset_id = generate_id("eset")
+    label = escape_string(model_name or model_id)
+    tx.query(
+        f'match $m isa kefed-model, has id "{escape_string(model_id)}"; '
+        f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+        f'has name "{label} elements"; '
+        f'(model: $m, element-set: $es) isa kefed-model-elementset;').resolve()
+    return eset_id
+
+
 def cmd_add_experiment(args):
-    """Create one experiment (ooevv element-set = kefed-model) under a paper's sensemaking bundle.
-    A paper may have several separate experiments."""
+    """Create one experiment (kefed-model + ooevv-element-set) under a paper's sensemaking bundle.
+    A paper may have several separate experiments.  The element-set houses the OOEVV
+    process/entity definitions used by cmd_add_process / cmd_add_entity_node and is linked
+    via the kefed-model-elementset relation (retiring the eset-{model_id} naming convention).
+    --element-set <id> reuses an existing element-set (shared across models)."""
     exp_id = generate_id("scexp")
     ts = get_timestamp()
+    defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+    lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+    existing_eset = getattr(args, "element_set", None)
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             b = list(tx.query(f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
                               f'fetch {{ "id": $b.id }};').resolve())
             if not b:
                 print(json.dumps({"success": False, "error": "Bundle not found"})); sys.exit(1)
+            if existing_eset:
+                es_check = list(tx.query(
+                    f'match $es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'fetch {{ "id": $es.id }};').resolve())
+                if not es_check:
+                    print(json.dumps({"success": False, "error": f"element-set {existing_eset!r} not found"}))
+                    sys.exit(1)
             tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'insert $m isa kefed-model, has id "{exp_id}", has name "{escape_string(args.name)}", has created-at {ts}; '
-                f'(bundle: $b, experiment: $m) isa ooevv-bundle-experiment;').resolve()
+                f'insert $m isa kefed-model, has id "{exp_id}", has name "{escape_string(args.name)}", '
+                f'has created-at {ts}{defn}{lf}; '
+                f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment;').resolve()
+            if existing_eset:
+                eset_id = existing_eset
+                tx.query(
+                    f'match $m isa kefed-model, has id "{exp_id}"; '
+                    f'$es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'insert (model: $m, element-set: $es) isa kefed-model-elementset;').resolve()
+            else:
+                eset_id = generate_id("eset")
+                tx.query(
+                    f'match $m isa kefed-model, has id "{exp_id}"; '
+                    f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+                    f'has name "{escape_string(args.name)} elements"; '
+                    f'(model: $m, element-set: $es) isa kefed-model-elementset;').resolve()
             tx.commit()
-    print(json.dumps({"success": True, "experiment_id": exp_id, "bundle": args.bundle}))
+    print(json.dumps({"success": True, "experiment_id": exp_id, "element_set_id": eset_id, "bundle": args.bundle}))
 
 
 def cmd_add_process(args):
-    """Add a protocol step (ooevv-process; type assay|material-processing|data-transformation) to an
-    experiment; --parent <process id> nests it as a sub-process (hierarchical decomposition)."""
-    types = {"assay": "ooevv-assay", "material-processing": "ooevv-material-processing",
-             "data-transformation": "ooevv-data-transformation"}
-    if args.type not in types:
-        print(json.dumps({"success": False, "error": f"--type must be one of {list(types)}"})); sys.exit(1)
-    _require_definition(args, "process")
-    proc_id = generate_id("scproc")
-    ts = get_timestamp()
-    defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
-    lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
-    # the container may be a reusable template OR a paper-specific experiment (both play the role)
-    ctype = "kefed-template" if getattr(args, "template", None) else "kefed-model"
-    cid = getattr(args, "template", None) or args.experiment
+    """Find-or-create an OOEVV process DEFINITION (ooevv-assay / ooevv-material-processing /
+    ooevv-data-transformation) in the model's element-set (resolved via the
+    kefed-model-elementset relation), then create a kefed-model-node typed by it
+    (kefed-node-type) and add the node to the model (kefed-model-element).
+    Returns the node id as 'process_id'."""
+    proc_types = {"assay": "ooevv-assay", "material-processing": "ooevv-material-processing",
+                  "data-transformation": "ooevv-data-transformation"}
+    if args.type not in proc_types:
+        print(json.dumps({"success": False, "error": f"--type must be one of {list(proc_types)}"})); sys.exit(1)
+    proc_ent_type = proc_types[args.type]
+    cid = getattr(args, "template", None) or getattr(args, "experiment", None)
     if not cid:
         print(json.dumps({"success": False, "error": "Provide --template or --experiment"})); sys.exit(1)
+    defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+    lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+    ts = get_timestamp()
+    node_id = generate_id("knode")
+    proc_def_id = None
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            m = list(tx.query(f'match $m isa {ctype}, has id "{escape_string(cid)}"; '
+            # Verify model exists
+            m = list(tx.query(f'match $m isa kefed-model, has id "{escape_string(cid)}"; '
                               f'fetch {{ "id": $m.id }};').resolve())
             if not m:
-                print(json.dumps({"success": False, "error": f"{ctype} not found"})); sys.exit(1)
-            tx.query(
-                f'match $m isa {ctype}, has id "{escape_string(cid)}"; '
-                f'insert $p isa {types[args.type]}, has id "{proc_id}", has name "{escape_string(args.name)}"{defn}{lf}, '
-                f'has created-at {ts}; (container: $m, contained-process: $p) isa ooevv-set-process;').resolve()
-            if getattr(args, "parent", None):
+                print(json.dumps({"success": False, "error": "kefed-model not found"})); sys.exit(1)
+            # Resolve element-set via kefed-model-elementset relation (creating+linking if absent)
+            eset_id = _model_elementset(tx, cid, getattr(args, "name", ""))
+            # Find or create OOEVV process def by name in the element-set
+            pd = list(tx.query(
+                f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                f'(element-set: $es, element: $p) isa ooevv-set-element; '
+                f'$p isa {proc_ent_type}, has name "{escape_string(args.name)}"; '
+                f'fetch {{ "id": $p.id }};').resolve())
+            if pd:
+                proc_def_id = pd[0]["id"]
+            else:
+                _require_definition(args, "process")
+                proc_def_id = generate_id("ooevv")
                 tx.query(
-                    f'match $par isa ooevv-process, has id "{escape_string(args.parent)}"; '
-                    f'$p isa ooevv-process, has id "{proc_id}"; '
-                    f'insert (parent-process: $par, sub-process: $p) isa ooevv-process-decomposition;').resolve()
+                    f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                    f'insert $p isa {proc_ent_type}, has id "{proc_def_id}", '
+                    f'has name "{escape_string(args.name)}"{defn}{lf}; '
+                    f'(element-set: $es, element: $p) isa ooevv-set-element;').resolve()
+            # Create kefed-model-node typed by the def; add to model
+            tx.query(
+                f'match $m isa kefed-model, has id "{escape_string(cid)}"; '
+                f'$pd isa {proc_ent_type}, has id "{proc_def_id}"; '
+                f'insert $n isa kefed-model-node, has id "{node_id}", '
+                f'has name "{escape_string(args.name)}", has created-at {ts}; '
+                f'(node: $n, node-type: $pd) isa kefed-node-type; '
+                f'(model: $m, element: $n) isa kefed-model-element;').resolve()
+            # Optional sub-process decomposition at the OOEVV def level
+            if getattr(args, "parent", None):
+                # parent is a node id; find its OOEVV process def
+                par_def = list(tx.query(
+                    f'match $pn isa kefed-model-node, has id "{escape_string(args.parent)}"; '
+                    f'(node: $pn, node-type: $pd) isa kefed-node-type; $pd isa ooevv-process; '
+                    f'fetch {{ "id": $pd.id }};').resolve())
+                if par_def:
+                    par_def_id = par_def[0]["id"]
+                    tx.query(
+                        f'match $par isa ooevv-process, has id "{par_def_id}"; '
+                        f'$p isa ooevv-process, has id "{proc_def_id}"; '
+                        f'insert (parent-process: $par, sub-process: $p) isa ooevv-process-decomposition;').resolve()
             tx.commit()
-    print(json.dumps({"success": True, "process_id": proc_id, "type": args.type, "parent": getattr(args, "parent", None)}))
+    print(json.dumps({"success": True, "process_id": node_id, "process_def_id": proc_def_id,
+                      "type": args.type, "parent": getattr(args, "parent", None)}))
 
 
-def cmd_link_entity(args):
-    """Link a curated entity to a process as input or output (material flow), and group it in the experiment."""
+def cmd_add_entity_node(args):
+    """Find-or-create an ooevv-material-entity DEFINITION in the model's element-set, create a
+    kefed-model-node typed by it (kefed-node-type), add to the model (kefed-model-element), and
+    optionally mark it as the model's subject (ooevv-subject). Returns 'entity_node_id' (node id)."""
+    cid = getattr(args, "template", None) or getattr(args, "experiment", None)
+    if not cid:
+        print(json.dumps({"success": False, "error": "Provide --template or --experiment"})); sys.exit(1)
+    defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
+    ts = get_timestamp()
+    node_id = generate_id("knode")
+    ent_def_id = None
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            # Verify model
+            m = list(tx.query(f'match $m isa kefed-model, has id "{escape_string(cid)}"; '
+                              f'fetch {{ "id": $m.id }};').resolve())
+            if not m:
+                print(json.dumps({"success": False, "error": "kefed-model not found"})); sys.exit(1)
+            # Resolve element-set via kefed-model-elementset relation (creating+linking if absent)
+            eset_id = _model_elementset(tx, cid, getattr(args, "name", ""))
+            # Find or create ooevv-material-entity def by name
+            ed = list(tx.query(
+                f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                f'(element-set: $es, element: $e) isa ooevv-set-element; '
+                f'$e isa ooevv-material-entity, has name "{escape_string(args.name)}"; '
+                f'fetch {{ "id": $e.id }};').resolve())
+            if ed:
+                ent_def_id = ed[0]["id"]
+            else:
+                _require_definition(args, "entity node")
+                ent_def_id = generate_id("ooevv")
+                tx.query(
+                    f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                    f'insert $e isa ooevv-material-entity, has id "{ent_def_id}", '
+                    f'has name "{escape_string(args.name)}"{defn}; '
+                    f'(element-set: $es, element: $e) isa ooevv-set-element;').resolve()
+            # Create kefed-model-node typed by the def; add to model
+            tx.query(
+                f'match $m isa kefed-model, has id "{escape_string(cid)}"; '
+                f'$ed isa ooevv-material-entity, has id "{ent_def_id}"; '
+                f'insert $n isa kefed-model-node, has id "{node_id}", '
+                f'has name "{escape_string(args.name)}", has created-at {ts}; '
+                f'(node: $n, node-type: $ed) isa kefed-node-type; '
+                f'(model: $m, element: $n) isa kefed-model-element;').resolve()
+            # Optionally mark as model subject
+            if getattr(args, "subject", False):
+                tx.query(
+                    f'match $m isa kefed-model, has id "{escape_string(cid)}"; '
+                    f'$n isa kefed-model-node, has id "{node_id}"; '
+                    f'insert (model: $m, subject-node: $n) isa ooevv-subject;').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "entity_node_id": node_id, "entity_def_id": ent_def_id,
+                      "subject": getattr(args, "subject", False)}))
+
+
+def cmd_link_nodes(args):
+    """Connect two kefed-model-nodes via ooevv-process-input (from_node is input-node,
+    to_node is consuming-node) or ooevv-process-output (from_node is producing-node,
+    to_node is output-node). --role input|output.
+    Replaces cmd_link_entity (which incorrectly linked scilit-entity directly)."""
     if args.role not in ("input", "output"):
         print(json.dumps({"success": False, "error": "--role must be input|output"})); sys.exit(1)
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            ok = list(tx.query(f'match $p isa ooevv-process, has id "{escape_string(args.process)}"; '
-                               f'$e isa scilit-entity, has id "{escape_string(args.entity)}"; '
-                               f'fetch {{ "p": $p.id }};').resolve())
+            ok = list(tx.query(
+                f'match $src isa kefed-model-node, has id "{escape_string(args.from_node)}"; '
+                f'$tgt isa kefed-model-node, has id "{escape_string(args.to_node)}"; '
+                f'fetch {{ "src": $src.id }};').resolve())
             if not ok:
-                print(json.dumps({"success": False, "error": "Process or entity not found"})); sys.exit(1)
-            rel = ("(input-entity: $e, consuming-process: $p) isa ooevv-process-input"
-                   if args.role == "input" else
-                   "(producing-process: $p, output-entity: $e) isa ooevv-process-output")
-            tx.query(f'match $p isa ooevv-process, has id "{escape_string(args.process)}"; '
-                     f'$e isa scilit-entity, has id "{escape_string(args.entity)}"; insert {rel};').resolve()
-            # group entity in the process's experiment
-            tx.query(f'match $p isa ooevv-process, has id "{escape_string(args.process)}"; '
-                     f'(container: $m, contained-process: $p) isa ooevv-set-process; '
-                     f'$e isa scilit-entity, has id "{escape_string(args.entity)}"; '
-                     f'insert (container: $m, contained-entity: $e) isa ooevv-set-entity;').resolve()
+                print(json.dumps({"success": False, "error": "Source or target node not found"})); sys.exit(1)
+            if args.role == "input":
+                rel = f'(input-node: $src, consuming-node: $tgt) isa ooevv-process-input'
+            else:
+                rel = f'(producing-node: $src, output-node: $tgt) isa ooevv-process-output'
+            tx.query(
+                f'match $src isa kefed-model-node, has id "{escape_string(args.from_node)}"; '
+                f'$tgt isa kefed-model-node, has id "{escape_string(args.to_node)}"; '
+                f'insert {rel};').resolve()
             tx.commit()
-    print(json.dumps({"success": True, "process": args.process, "entity": args.entity, "role": args.role}))
+    print(json.dumps({"success": True, "from_node": args.from_node, "to_node": args.to_node, "role": args.role}))
+
+
+def _spec_enum_count(tx, scale_id):
+    """Number of enumerated values in a value-spec (nominal/binary allowed-value or ordinal named-rank);
+    0 for numeric/file/composite (no fixed value list)."""
+    for attr in ("ooevv-allowed-value", "ooevv-named-rank"):
+        try:
+            r = list(tx.query(f'match $s isa ooevv-scale, has id "{escape_string(scale_id)}", has {attr} $v; reduce $c = count;').resolve())
+            n = r[0].get("c").get_integer() if r else 0
+            if n > 0:
+                return n
+        except Exception:
+            pass
+    return 0
+
+
+def _role_from_cardinality(requested, enum_n):
+    """A variable's role is fixed by its value-spec's cardinality: exactly one possible value -> constant;
+    two or more (or an unbounded numeric range) -> parameter. 'measurement' (the readout) is respected as-is.
+    Returns (role, corrected_from_or_None)."""
+    if requested == "measurement":
+        return "measurement", None
+    derived = "constant" if enum_n == 1 else "parameter"
+    return derived, (requested if derived != requested else None)
 
 
 def cmd_add_variable(args):
-    """Add an OOEVV experimental-variable to an experiment: role + measured quality + a typed scale.
-    For measurements, --produced-by <process id> records the terminal assay."""
-    if args.role not in CLAIM_TYPES and args.role not in ("parameter", "constant", "measurement"):
-        pass
+    """Attach an ooevv-variable (role + quality + value-spec) to a kefed-model-node.
+
+    PREFERRED: --value-spec <id> references a shared value-specification (its quality is used;
+    one scale, many variables). LEGACY: --quality + --scale-type creates an inline scale, which is
+    ALSO registered as a value-spec on the quality (ooevv-quality-scale) so it is never orphaned.
+
+    The parameter/constant role is DERIVED from the value-spec's cardinality (one possible value ->
+    constant; two or more -> parameter), so e.g. genotype {WT|SIRT3-KO} is always a parameter."""
     if args.role not in ("parameter", "constant", "measurement"):
         print(json.dumps({"success": False, "error": "--role must be parameter|constant|measurement"})); sys.exit(1)
-    scale_types = {"nominal": "ooevv-nominal-scale", "binary": "ooevv-binary-scale",
-                   "ordinal": "ooevv-ordinal-scale", "numeric": "ooevv-numeric-scale",
-                   "file": "ooevv-file-scale", "composite": "ooevv-composite-scale"}
-    if args.scale_type not in scale_types:
-        print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(scale_types)}"})); sys.exit(1)
+    node_id = getattr(args, "node", None)
+    if not node_id:
+        print(json.dumps({"success": False, "error": "Provide --node (kefed-model-node id)"})); sys.exit(1)
+    value_spec = getattr(args, "value_spec", None)
     _require_definition(args, "variable")
-    var_id = generate_id("scvar"); scale_id = generate_id("scscale"); ts = get_timestamp()
+    var_id = generate_id("scvar"); ts = get_timestamp()
     defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
     lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
-    # scale attrs
-    sattrs = []
-    if getattr(args, "unit", None):
-        sattrs.append(f'has ooevv-unit "{escape_string(args.unit)}"')
-    if args.scale_type == "numeric":
-        if getattr(args, "min", None) is not None: sattrs.append(f'has ooevv-min {float(args.min)}')
-        if getattr(args, "max", None) is not None: sattrs.append(f'has ooevv-max {float(args.max)}')
-    allowed = [a.strip() for a in (getattr(args, "values", "") or "").split("|") if a.strip()]
-    if args.scale_type in ("nominal", "binary"):
-        sattrs += [f'has ooevv-allowed-value "{escape_string(a)}"' for a in allowed]
-    if args.scale_type == "ordinal":
-        sattrs += [f'has ooevv-named-rank "{escape_string(a)}"' for a in allowed]
-    sclause = (", " + ", ".join(sattrs)) if sattrs else ""
-    ctype = "kefed-template" if getattr(args, "template", None) else "kefed-model"
-    cid = getattr(args, "template", None) or args.experiment
-    if not cid:
-        print(json.dumps({"success": False, "error": "Provide --template or --experiment"})); sys.exit(1)
+    def _var_ins(role):
+        return (f'$v isa ooevv-variable, has id "{var_id}", has name "{escape_string(args.name)}", '
+                f'has ooevv-variable-role "{escape_string(role)}"{defn}{lf}, has created-at {ts}')
+    corrected = None
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            m = list(tx.query(f'match $m isa {ctype}, has id "{escape_string(cid)}"; '
-                              f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
-                              f'fetch {{ "m": $m.id }};').resolve())
-            if not m:
-                print(json.dumps({"success": False, "error": f"{ctype} or quality not found"})); sys.exit(1)
-            tx.query(
-                f'match $m isa {ctype}, has id "{escape_string(cid)}"; '
-                f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
-                f'insert $v isa kefed-variable, has id "{var_id}", has name "{escape_string(args.name)}", '
-                f'has kefed-variable-role "{escape_string(args.role)}"{defn}{lf}, has created-at {ts}; '
-                f'$s isa {scale_types[args.scale_type]}, has id "{scale_id}", has created-at {ts}{sclause}; '
-                f'(model: $m, variable: $v) isa kefed-element; '
-                f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
-                f'(measured-variable: $v, quality: $q) isa ooevv-measures;').resolve()
-            if args.role == "measurement" and getattr(args, "produced_by", None):
-                tx.query(f'match $v isa kefed-variable, has id "{var_id}"; '
-                         f'$p isa ooevv-process, has id "{escape_string(args.produced_by)}"; '
-                         f'insert (produced-measurement: $v, terminal-process: $p) isa ooevv-produced-by;').resolve()
-            tx.commit()
-    print(json.dumps({"success": True, "variable_id": var_id, "scale_id": scale_id, "role": args.role}))
+            if value_spec:
+                # reference a shared value-spec; its quality comes via ooevv-quality-scale
+                ok = list(tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$s isa ooevv-scale, has id "{escape_string(value_spec)}"; '
+                    f'(quality: $q, scale: $s) isa ooevv-quality-scale; fetch {{ "nid": $n.id }};').resolve())
+                if not ok:
+                    print(json.dumps({"success": False, "error": "Node not found, or value-spec not found / not linked to a quality"})); sys.exit(1)
+                role, corrected = _role_from_cardinality(args.role, _spec_enum_count(tx, value_spec))
+                tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$s isa ooevv-scale, has id "{escape_string(value_spec)}"; '
+                    f'(quality: $q, scale: $s) isa ooevv-quality-scale; '
+                    f'insert {_var_ins(role)}; '
+                    f'(node: $n, variable: $v) isa kefed-node-variable; '
+                    f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
+                    f'(measured-variable: $v, quality: $q) isa ooevv-measures;').resolve()
+                tx.commit()
+                scale_id = value_spec
+            else:
+                if args.scale_type not in _SCALE_TYPES:
+                    print(json.dumps({"success": False, "error": f"--scale-type must be one of {list(_SCALE_TYPES)} (or use --value-spec)"})); sys.exit(1)
+                if not getattr(args, "quality", None):
+                    print(json.dumps({"success": False, "error": "Provide --quality (or --value-spec)"})); sys.exit(1)
+                ok = list(tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; fetch {{ "nid": $n.id }};').resolve())
+                if not ok:
+                    print(json.dumps({"success": False, "error": "Node or quality not found"})); sys.exit(1)
+                enum_n = len([a for a in (getattr(args, "values", "") or "").split("|") if a.strip()])
+                role, corrected = _role_from_cardinality(args.role, enum_n)
+                scale_id = generate_id("scvspec")
+                sclause = _scale_attr_clause(args)
+                # inline scale is named + registered as a value-spec on the quality (never orphaned)
+                tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$q isa ooevv-quality, has id "{escape_string(args.quality)}"; '
+                    f'insert {_var_ins(role)}; '
+                    f'$s isa {_SCALE_TYPES[args.scale_type]}, has id "{scale_id}", '
+                    f'has name "{escape_string(args.name)}", has created-at {ts}{sclause}; '
+                    f'(node: $n, variable: $v) isa kefed-node-variable; '
+                    f'(scaled-variable: $v, scale: $s) isa ooevv-has-scale; '
+                    f'(measured-variable: $v, quality: $q) isa ooevv-measures; '
+                    f'(quality: $q, scale: $s) isa ooevv-quality-scale;').resolve()
+                tx.commit()
+    print(json.dumps({"success": True, "variable_id": var_id, "scale_id": scale_id, "role": role,
+                      "role_corrected_from": corrected, "value_spec_referenced": bool(value_spec)}))
 
 
 def cmd_bind_parameter(args):
-    """Bind an independent variable (parameter/constant) at a process step (the KEfED dependency).
-    --target-entity makes the binding confer specificity (e.g. antibody -> SIRT3)."""
+    """Attach a parameter/constant to a kefed-model-node via kefed-node-variable (idempotent).
+    --target-entity (kefed-model-node id) adds specificity via ooevv-parameter-target.
+    Retired: ooevv-parameter-binding / binding-bearer role."""
+    node_id = getattr(args, "node", None)
+    if not node_id:
+        print(json.dumps({"success": False, "error": "Provide --node (kefed-model-node id)"})); sys.exit(1)
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            ok = list(tx.query(f'match $p isa ooevv-process, has id "{escape_string(args.process)}"; '
-                               f'$v isa kefed-variable, has id "{escape_string(args.parameter)}"; '
-                               f'fetch {{ "p": $p.id }};').resolve())
+            ok = list(tx.query(
+                f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                f'$v isa ooevv-variable, has id "{escape_string(args.parameter)}"; '
+                f'fetch {{ "nid": $n.id }};').resolve())
             if not ok:
-                print(json.dumps({"success": False, "error": "Process or parameter not found"})); sys.exit(1)
-            tx.query(f'match $p isa ooevv-process, has id "{escape_string(args.process)}"; '
-                     f'$v isa kefed-variable, has id "{escape_string(args.parameter)}"; '
-                     f'insert (binding-process: $p, bound-parameter: $v) isa ooevv-parameter-binding;').resolve()
+                print(json.dumps({"success": False, "error": "Node or parameter not found"})); sys.exit(1)
+            existing = list(tx.query(
+                f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                f'$v isa ooevv-variable, has id "{escape_string(args.parameter)}"; '
+                f'(node: $n, variable: $v) isa kefed-node-variable; '
+                f'fetch {{ "nid": $n.id }};').resolve())
+            if not existing:
+                tx.query(
+                    f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                    f'$v isa ooevv-variable, has id "{escape_string(args.parameter)}"; '
+                    f'insert (node: $n, variable: $v) isa kefed-node-variable;').resolve()
             if getattr(args, "target_entity", None):
-                tx.query(f'match $v isa kefed-variable, has id "{escape_string(args.parameter)}"; '
-                         f'$e isa scilit-entity, has id "{escape_string(args.target_entity)}"; '
-                         f'insert (targeting-parameter: $v, target-entity: $e) isa ooevv-parameter-target;').resolve()
+                tx.query(
+                    f'match $v isa ooevv-variable, has id "{escape_string(args.parameter)}"; '
+                    f'$e isa kefed-model-node, has id "{escape_string(args.target_entity)}"; '
+                    f'insert (targeting-parameter: $v, target-entity: $e) isa ooevv-parameter-target;').resolve()
             tx.commit()
-    print(json.dumps({"success": True, "process": args.process, "parameter": args.parameter,
+    print(json.dumps({"success": True, "node": node_id, "parameter": args.parameter,
                       "target_entity": getattr(args, "target_entity", None)}))
 
 
@@ -3813,64 +4235,48 @@ def cmd_bind_parameter(args):
 # =============================================================================
 
 def cmd_ensure_template(args):
-    """Find-or-create a reusable kefed-template (the experiment design) by name."""
+    """Find-or-create a reusable experiment-design template:
+    a kefed-model with kefed-model-state 'template', linked to an ooevv-element-set via
+    kefed-model-elementset.  --definition/--long-form are persisted on the kefed-model.
+    --element-set <id> reuses an existing element-set (shared across models)."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             ex = list(tx.query(
-                f'match $t isa kefed-template, has name "{escape_string(args.name)}"; '
+                f'match $t isa kefed-model, has kefed-model-state "template", '
+                f'has name "{escape_string(args.name)}"; '
                 f'fetch {{ "id": $t.id }};').resolve())
         if ex:
             print(json.dumps({"success": True, "template_id": ex[0]["id"], "reused": True}))
             return
-        _require_definition(args, "template")
         tid = generate_id("sctpl"); ts = get_timestamp()
         defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
         lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
+        existing_eset = getattr(args, "element_set", None)
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $t isa kefed-template, has id "{tid}", has name "{escape_string(args.name)}"{defn}{lf}, '
-                     f'has created-at {ts};').resolve()
+            if existing_eset:
+                es_check = list(tx.query(
+                    f'match $es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'fetch {{ "id": $es.id }};').resolve())
+                if not es_check:
+                    print(json.dumps({"success": False, "error": f"element-set {existing_eset!r} not found"}))
+                    sys.exit(1)
+            tx.query(
+                f'insert $t isa kefed-model, has id "{tid}", has name "{escape_string(args.name)}", '
+                f'has kefed-model-state "template", has created-at {ts}{defn}{lf};').resolve()
+            if existing_eset:
+                tx.query(
+                    f'match $t isa kefed-model, has id "{tid}"; '
+                    f'$es isa ooevv-element-set, has id "{escape_string(existing_eset)}"; '
+                    f'insert (model: $t, element-set: $es) isa kefed-model-elementset;').resolve()
+            else:
+                eset_id = generate_id("eset")
+                tx.query(
+                    f'match $t isa kefed-model, has id "{tid}"; '
+                    f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+                    f'has name "{escape_string(args.name)} elements"; '
+                    f'(model: $t, element-set: $es) isa kefed-model-elementset;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "template_id": tid, "reused": False}))
-
-
-def cmd_add_slot(args):
-    """Declare a typed slot on a template (a per-instance placeholder: target-gene, normalization-control...)."""
-    with get_driver() as driver:
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            t = list(tx.query(f'match $t isa kefed-template, has id "{escape_string(args.template)}"; '
-                              f'fetch {{ "id": $t.id }};').resolve())
-            if not t:
-                print(json.dumps({"success": False, "error": "Template not found"})); sys.exit(1)
-            _require_definition(args, "slot")
-            sid = generate_id("scslot"); ts = get_timestamp()
-            name = getattr(args, "name", None) or args.role
-            kind = f', has kefed-slot-kind "{escape_string(args.kind)}"' if getattr(args, "kind", None) else ""
-            defn = f', has ooevv-definition "{escape_string(args.definition)}"' if getattr(args, "definition", None) else ""
-            lf = f', has ooevv-long-form "{escape_string(args.long_form)}"' if getattr(args, "long_form", None) else ""
-            tx.query(
-                f'match $t isa kefed-template, has id "{escape_string(args.template)}"; '
-                f'insert $sl isa kefed-slot, has id "{sid}", has name "{escape_string(name)}", '
-                f'has kefed-slot-role "{escape_string(args.role)}"{kind}{defn}{lf}, has created-at {ts}; '
-                f'(template: $t, slot: $sl) isa kefed-template-slot;').resolve()
-            tx.commit()
-    print(json.dumps({"success": True, "slot_id": sid, "role": args.role, "kind": getattr(args, "kind", None)}))
-
-
-def cmd_param_slot(args):
-    """Bind a template variable (parameter/measurement) to a slot: the variable's value is
-    specialized per-instance by whatever entity fills the slot (replaces template-level targeting)."""
-    with get_driver() as driver:
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            ok = list(tx.query(f'match $v isa kefed-variable, has id "{escape_string(args.parameter)}"; '
-                               f'$sl isa kefed-slot, has id "{escape_string(args.slot)}"; '
-                               f'fetch {{ "v": $v.id }};').resolve())
-            if not ok:
-                print(json.dumps({"success": False, "error": "Variable or slot not found"})); sys.exit(1)
-            tx.query(f'match $v isa kefed-variable, has id "{escape_string(args.parameter)}"; '
-                     f'$sl isa kefed-slot, has id "{escape_string(args.slot)}"; '
-                     f'insert (slotted-variable: $v, slot: $sl) isa ooevv-param-slot;').resolve()
-            tx.commit()
-    print(json.dumps({"success": True, "parameter": args.parameter, "slot": args.slot}))
 
 
 def _match_filter(rows, term, *fields):
@@ -3883,25 +4289,28 @@ def _match_filter(rows, term, *fields):
 
 def cmd_list_templates(args):
     """RECOGNITION / gap-check: list reusable templates (optionally --match a name substring)
-    with slot/process/variable counts, so curation can decide reuse-vs-create."""
+    with process/variable/instance counts, so curation can decide reuse-vs-create.
+    Template = kefed-model with kefed-model-state 'template'.
+    Retired: kefed-template type, slot counts, kefed-element (Task 8, Jun 2026)."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             rows = list(tx.query(
-                'match $t isa kefed-template; '
-                'fetch { "id": $t.id, "name": $t.name, "definition": $t.ooevv-definition, "long_form": $t.ooevv-long-form };').resolve())
+                'match $t isa kefed-model, has kefed-model-state "template"; '
+                'fetch { "id": $t.id, "name": $t.name };').resolve())
             tpls = _match_filter([{k: v for k, v in r.items() if v is not None} for r in rows],
-                                 getattr(args, "match", None), "name", "definition")
+                                 getattr(args, "match", None), "name")
             for tp in tpls:
                 e = escape_string(tp["id"])
-                tp["slots"] = [{k: v for k, v in r.items() if v is not None} for r in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (template: $t, slot: $sl) isa kefed-template-slot; '
-                    f'fetch {{ "role": $sl.kefed-slot-role, "kind": $sl.kefed-slot-kind }};').resolve()]
                 tp["process_count"] = sum(1 for _ in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (container: $t, contained-process: $p) isa ooevv-set-process; select $p;').resolve())
+                    f'match $t isa kefed-model, has id "{e}"; '
+                    f'(model: $t, element: $n) isa kefed-model-element; $n isa kefed-model-node; select $n;').resolve())
                 tp["variable_count"] = sum(1 for _ in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (model: $t, variable: $v) isa kefed-element; select $v;').resolve())
+                    f'match $t isa kefed-model, has id "{e}"; '
+                    f'(model: $t, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+                    f'(node: $n, variable: $v) isa kefed-node-variable; select $v;').resolve())
                 tp["instance_count"] = sum(1 for _ in tx.query(
-                    f'match $t isa kefed-template, has id "{e}"; (instance: $i, template: $t) isa ooevv-instance-of; select $i;').resolve())
+                    f'match $t isa kefed-model, has id "{e}"; '
+                    f'(instance: $i, model: $t) isa kefed-instance-of; select $i;').resolve())
     print(json.dumps({"success": True, "count": len(tpls), "templates": tpls}, indent=2))
 
 
@@ -3946,9 +4355,9 @@ def cmd_audit_terms(args):
     definition, definitions that are too short, and names with an abbreviation but no
     long-form. Read-only; fix flagged items by re-authoring with --definition/--long-form."""
     import re
+    # kefed-variable -> ooevv-variable; kefed-template + kefed-slot retired (Task 8, Jun 2026)
     TYPES = [("ooevv-quality", "quality"), ("scilit-entity", "entity"),
-             ("ooevv-process", "process"), ("kefed-variable", "variable"),
-             ("kefed-template", "template"), ("kefed-slot", "slot")]
+             ("ooevv-process", "process"), ("ooevv-variable", "variable")]
     tok_re = re.compile(r"[A-Za-z0-9+]+")
     minlen = int(getattr(args, "min_def_len", None) or 40)
     only = getattr(args, "type", None)
@@ -3980,46 +4389,26 @@ def cmd_audit_terms(args):
 
 
 def cmd_instantiate_template(args):
-    """FILL: create a kefed-instance under a bundle, instance-of a (matched/created) template.
-    The instance reuses the template's graph; it only adds slot bindings + data rows."""
+    """FILL: create a kefed-instance under a bundle, linked to a template-state kefed-model.
+    The instance reuses the template's graph; it only adds data rows."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             ok = list(tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'$t isa kefed-template, has id "{escape_string(args.template)}"; '
+                f'$m isa kefed-model, has id "{escape_string(args.template)}"; '
                 f'fetch {{ "b": $b.id }};').resolve())
             if not ok:
-                print(json.dumps({"success": False, "error": "Bundle or template not found"})); sys.exit(1)
+                print(json.dumps({"success": False, "error": "Bundle or template (kefed-model) not found"})); sys.exit(1)
             iid = generate_id("scinst"); ts = get_timestamp()
             name = getattr(args, "name", None) or args.template
             tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{escape_string(args.bundle)}"; '
-                f'$t isa kefed-template, has id "{escape_string(args.template)}"; '
+                f'$m isa kefed-model, has id "{escape_string(args.template)}"; '
                 f'insert $i isa kefed-instance, has id "{iid}", has name "{escape_string(name)}", has created-at {ts}; '
-                f'(instance: $i, template: $t) isa ooevv-instance-of; '
-                f'(bundle: $b, experiment: $i) isa ooevv-bundle-experiment;').resolve()
+                f'(instance: $i, model: $m) isa kefed-instance-of; '
+                f'(sensemaking: $b, experiment: $i) isa scilit-sensemaking-experiment;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "instance_id": iid, "bundle": args.bundle, "template": args.template}))
-
-
-def cmd_bind_slot(args):
-    """FILL a template slot for one instance with a curated entity (target-gene -> SIRT3)."""
-    with get_driver() as driver:
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            ok = list(tx.query(
-                f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
-                f'$sl isa kefed-slot, has id "{escape_string(args.slot)}"; '
-                f'$e isa scilit-entity, has id "{escape_string(args.entity)}"; '
-                f'fetch {{ "i": $i.id }};').resolve())
-            if not ok:
-                print(json.dumps({"success": False, "error": "Instance, slot, or entity not found"})); sys.exit(1)
-            tx.query(
-                f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
-                f'$sl isa kefed-slot, has id "{escape_string(args.slot)}"; '
-                f'$e isa scilit-entity, has id "{escape_string(args.entity)}"; '
-                f'insert (instance: $i, slot: $sl, filler: $e) isa ooevv-slot-binding;').resolve()
-            tx.commit()
-    print(json.dumps({"success": True, "instance": args.instance, "slot": args.slot, "entity": args.entity}))
 
 
 def cmd_add_datum(args):
@@ -4037,21 +4426,41 @@ def cmd_add_datum(args):
                                  f'fetch {{ "id": $i.id }};').resolve())
             if not inst:
                 print(json.dumps({"success": False, "error": "Instance not found"})); sys.exit(1)
+            # Validate cell variable ids against the model (if instance has one via kefed-instance-of).
+            # If no model is linked, skip validation for backward compatibility.
+            model_rows = list(tx.query(
+                f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
+                f'(instance: $i, model: $m) isa kefed-instance-of; '
+                f'fetch {{ "mid": $m.id }};').resolve())
+            if model_rows:
+                mid = escape_string(model_rows[0]["mid"])
+                var_rows = list(tx.query(
+                    f'match $m isa kefed-model, has id "{mid}"; '
+                    f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
+                    f'(node: $n, variable: $v) isa kefed-node-variable; '
+                    f'fetch {{ "vid": $v.id }};').resolve())
+                model_vars = {r["vid"] for r in var_rows}
+                for c in cells:
+                    cell_vid = str(c["variable"])
+                    if cell_vid not in model_vars:
+                        print(json.dumps({"success": False,
+                                          "error": f"unknown variable {cell_vid!r} for this model"}))
+                        sys.exit(1)
             did = generate_id("scdatum"); ts = get_timestamp()
             tx.query(
                 f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
-                f'insert $d isa ooevv-datum, has id "{did}", has created-at {ts}; '
-                f'(instance: $i, datum: $d) isa ooevv-instance-datum;').resolve()
+                f'insert $d isa kefed-row, has id "{did}", has created-at {ts}; '
+                f'(instance: $i, datum: $d) isa kefed-instance-datum;').resolve()
             for c in cells:
                 vid = escape_string(str(c["variable"]))
                 val = escape_string(str(c.get("value", "")))
                 num = c.get("number", None)
-                numclause = f', has ooevv-cell-number {float(num)}' if num is not None else ""
+                numclause = f', has kefed-cell-number {float(num)}' if num is not None else ""
                 tx.query(
-                    f'match $d isa ooevv-datum, has id "{did}"; '
-                    f'$v isa kefed-variable, has id "{vid}"; '
-                    f'insert (datum: $d, cell-variable: $v) isa ooevv-cell, '
-                    f'has ooevv-cell-value "{val}"{numclause};').resolve()
+                    f'match $d isa kefed-row, has id "{did}"; '
+                    f'$v isa ooevv-variable, has id "{vid}"; '
+                    f'insert (datum: $d, cell-variable: $v) isa kefed-cell, '
+                    f'has kefed-cell-value "{val}"{numclause};').resolve()
             obs_id = getattr(args, "observation", None)
             if not obs_id and getattr(args, "gloss", None):
                 obs_id = generate_id("scobs")
@@ -4063,9 +4472,9 @@ def cmd_add_datum(args):
                     f'has scilit-knowledge-level "{kl}", has scilit-bio-scale "{bs}", has created-at {ts};').resolve()
             if obs_id:
                 tx.query(
-                    f'match $d isa ooevv-datum, has id "{did}"; '
+                    f'match $d isa kefed-row, has id "{did}"; '
                     f'$o isa scilit-observation, has id "{escape_string(obs_id)}"; '
-                    f'insert (datum: $d, observation: $o) isa ooevv-datum-observation;').resolve()
+                    f'insert (datum: $d, observation: $o) isa kefed-datum-observation;').resolve()
             tx.commit()
     print(json.dumps({"success": True, "datum_id": did, "instance": args.instance,
                       "cells": len(cells), "observation": obs_id}))
@@ -4475,6 +4884,25 @@ def main():
     p.add_argument("--name", required=True, help="Quality name (concentration, signal-intensity...)")
     p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
     p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
+    p.add_argument("--curie", help="VERIFIED ontology curie (e.g. PATO:0000011). Attach ONLY if the term's definition matches; else omit -> stays ungrounded.")
+    p.add_argument("--grounding-label", dest="grounding_label", help="Canonical label of the grounded ontology term")
+
+    p = subparsers.add_parser("ensure-value-spec",
+        help="Find-or-create a named reusable value-specification (scale) that a Quality can take")
+    p.add_argument("--quality", required=True, help="ooevv-quality id (scqual-...) this value-spec is canonical for")
+    p.add_argument("--name", required=True, help="Value-spec name (e.g. 'age (young/old)')")
+    p.add_argument("--scale-type", required=True, dest="scale_type", help="nominal|binary|ordinal|numeric|file|composite")
+    p.add_argument("--values", help="Pipe-separated allowed values (nominal/binary) or ORDERED ranks (ordinal)")
+    p.add_argument("--unit", help="Numeric scale unit")
+    p.add_argument("--min", help="Numeric scale min")
+    p.add_argument("--max", help="Numeric scale max")
+    p.add_argument("--definition", help="Curated definition (undergraduate-level)")
+    p.add_argument("--long-form", dest="long_form")
+    p.add_argument("--curie", help="VERIFIED curie (e.g. unit UO:0000033); attach only if correct, else omit")
+
+    p = subparsers.add_parser("list-value-specs", help="RECOGNITION: list value-specifications (optionally for one quality)")
+    p.add_argument("--quality", help="Filter to one quality id")
+    p.add_argument("--match", help="Case-insensitive substring filter on name")
 
     p = subparsers.add_parser("ensure-entity", help="Find-or-create a reusable curated entity (specificity/material target)")
     p.add_argument("--name", required=True, help="Entity name (SIRT3, dasatinib, HSC...)")
@@ -4485,6 +4913,9 @@ def main():
     p = subparsers.add_parser("add-experiment", help="Create one experiment (element-set) under a bundle")
     p.add_argument("--bundle", required=True, help="Bundle id (scsense-...)")
     p.add_argument("--name", required=True, help="Experiment label (e.g. 'Fig 1: SIRT3 expression')")
+    p.add_argument("--definition", help="Curated definition of the experiment (undergraduate-level)")
+    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated experiment name")
+    p.add_argument("--element-set", dest="element_set", help="Reuse an existing ooevv-element-set id")
 
     p = subparsers.add_parser("add-process", help="Add a protocol step to an experiment OR template (hierarchical via --parent)")
     p.add_argument("--experiment", help="Experiment id (scexp-...)")
@@ -4495,48 +4926,57 @@ def main():
     p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
     p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
 
-    p = subparsers.add_parser("link-entity", help="Link an entity to a process as input|output")
-    p.add_argument("--process", required=True, help="Process id (scproc-...)")
-    p.add_argument("--entity", required=True, help="Entity id (scent-...)")
+    p = subparsers.add_parser("add-entity-node",
+        help="Add an entity node (ooevv-material-entity def + kefed-model-node) to an experiment or template")
+    p.add_argument("--experiment", help="Experiment id (scexp-...)")
+    p.add_argument("--template", help="Template id (sctpl-...)")
+    p.add_argument("--name", required=True, help="Entity name (e.g. 'SIRT3 cell line')")
+    p.add_argument("--subject", action="store_true", help="Mark as model subject via ooevv-subject")
+    p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level)")
+
+    p = subparsers.add_parser("link-entity",
+        help="[DEPRECATED — use link-nodes] Link two kefed-model-nodes as input|output")
+    p.add_argument("--from-node", dest="from_node", required=True, help="Source kefed-model-node id")
+    p.add_argument("--to-node", dest="to_node", required=True, help="Target kefed-model-node id")
     p.add_argument("--role", required=True, help="input|output")
 
-    p = subparsers.add_parser("add-variable", help="Add an OOEVV experimental-variable (role + quality + scale) to an experiment OR template")
-    p.add_argument("--experiment", help="Experiment id (scexp-...)")
-    p.add_argument("--template", help="Template id (sctpl-...) — add the variable definition to a reusable design")
+    p = subparsers.add_parser("link-nodes",
+        help="Connect two kefed-model-nodes via ooevv-process-input (role=input) or ooevv-process-output (role=output)")
+    p.add_argument("--from-node", dest="from_node", required=True, help="Source kefed-model-node id")
+    p.add_argument("--to-node", dest="to_node", required=True, help="Target kefed-model-node id")
+    p.add_argument("--role", required=True, help="input|output")
+
+    p = subparsers.add_parser("add-variable",
+        help="Add an OOEVV experimental-variable (role + quality + scale) to a kefed-model-node")
+    p.add_argument("--node", required=True, help="kefed-model-node id to attach the variable to")
     p.add_argument("--name", required=True, help="Variable name")
     p.add_argument("--role", required=True, help="parameter|constant|measurement")
-    p.add_argument("--quality", required=True, help="ooevv-quality id (scqual-...)")
-    p.add_argument("--scale-type", required=True, dest="scale_type", help="nominal|binary|ordinal|numeric|file|composite")
+    p.add_argument("--value-spec", dest="value_spec",
+        help="REFERENCE a shared value-spec id (ooevv-scale). Its quality is used; --quality/--scale-type not needed. Preferred (reuse).")
+    p.add_argument("--quality", help="ooevv-quality id (scqual-...) — required unless --value-spec is given")
+    p.add_argument("--scale-type", dest="scale_type",
+        help="nominal|binary|ordinal|numeric|file|composite — required unless --value-spec is given")
     p.add_argument("--unit", help="Numeric scale unit")
     p.add_argument("--min", help="Numeric scale min")
     p.add_argument("--max", help="Numeric scale max")
     p.add_argument("--values", help="Pipe-separated allowed values (nominal/binary) or ordered ranks (ordinal)")
-    p.add_argument("--produced-by", dest="produced_by", help="(measurement) terminal process id")
     p.add_argument("--definition", help="Curated definition (plain-English, undergraduate-level: what it is + what it does)")
-    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
+    p.add_argument("--long-form", dest="long_form",
+        help="Expanded form of an abbreviated name (e.g. 'LSK' -> 'Lineage-negative, Sca-1+, c-Kit+')")
 
-    p = subparsers.add_parser("bind-parameter", help="Bind a parameter at a process step (+ optional specificity target entity)")
-    p.add_argument("--process", required=True, help="Process id (scproc-...)")
+    p = subparsers.add_parser("bind-parameter",
+        help="Bind a parameter at a kefed-model-node (idempotent kefed-node-variable; + optional specificity target)")
+    p.add_argument("--node", required=True, help="kefed-model-node id")
     p.add_argument("--parameter", required=True, help="Parameter variable id (scvar-...)")
-    p.add_argument("--target-entity", dest="target_entity", help="Entity the parameter targets (specificity)")
+    p.add_argument("--target-entity", dest="target_entity",
+        help="kefed-model-node id the parameter targets (specificity via ooevv-parameter-target)")
 
     # --- KEfED template / instance / data (curation by recognize-reuse-fill) ---
     p = subparsers.add_parser("ensure-template", help="Find-or-create a reusable experiment-design template")
     p.add_argument("--name", required=True, help="Template name (e.g. 'qPCR expression profiling')")
     p.add_argument("--definition", help="Curated definition of the design (undergraduate-level: what the assay measures + how)")
     p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated template name")
-
-    p = subparsers.add_parser("add-slot", help="Declare a typed slot on a template (filled per-instance)")
-    p.add_argument("--template", required=True, help="Template id (sctpl-...)")
-    p.add_argument("--role", required=True, help="target-gene|normalization-control|grouping|treatment|...")
-    p.add_argument("--kind", help="gene|chemical|cell-type|antibody|...")
-    p.add_argument("--name", help="Slot display name (defaults to role)")
-    p.add_argument("--definition", help="What this slot is for, in plain English (undergraduate-level)")
-    p.add_argument("--long-form", dest="long_form", help="Expanded form of an abbreviated slot name")
-
-    p = subparsers.add_parser("param-slot", help="Bind a template variable to a slot (defers specificity to the instance)")
-    p.add_argument("--parameter", required=True, help="Template variable id (scvar-...)")
-    p.add_argument("--slot", required=True, help="Slot id (scslot-...)")
+    p.add_argument("--element-set", dest="element_set", help="Reuse an existing ooevv-element-set id")
 
     p = subparsers.add_parser("list-templates", help="RECOGNITION/gap-check: list reusable templates (+ counts)")
     p.add_argument("--match", help="Case-insensitive substring filter on name/definition")
@@ -4549,7 +4989,7 @@ def main():
 
     p = subparsers.add_parser("audit-terms",
         help="LINTER: flag OOEVV terms with missing/short definitions or unexpanded abbreviations")
-    p.add_argument("--type", choices=["quality", "entity", "process", "variable", "template", "slot"],
+    p.add_argument("--type", choices=["quality", "entity", "process", "variable"],
         help="Restrict the audit to one element type")
     p.add_argument("--min-def-len", dest="min_def_len", type=int,
         help="Minimum acceptable definition length in characters (default 40)")
@@ -4558,11 +4998,6 @@ def main():
     p.add_argument("--bundle", required=True, help="Bundle id (scsense-...)")
     p.add_argument("--template", required=True, help="Template id (sctpl-...)")
     p.add_argument("--name", help="Instance label (optional)")
-
-    p = subparsers.add_parser("bind-slot", help="FILL a template slot for an instance with a curated entity")
-    p.add_argument("--instance", required=True, help="Instance id (scinst-...)")
-    p.add_argument("--slot", required=True, help="Slot id (scslot-...)")
-    p.add_argument("--entity", required=True, help="Entity id (scent-...)")
 
     p = subparsers.add_parser("add-datum", help="FILL: add one data row (cells + provenance observation) to an instance")
     p.add_argument("--instance", required=True, help="Instance id (scinst-...)")
@@ -4603,6 +5038,11 @@ def main():
 
     p = subparsers.add_parser("show-instance", help="Show one template instance (filled slots + data spreadsheet)")
     p.add_argument("--id", required=True, help="Instance id (scinst-...)")
+
+    p = subparsers.add_parser("show-data-signature",
+        help="Show data signature (index sets) for each measurement variable in a KEfED model")
+    p.add_argument("--model", "--experiment", dest="model", required=True,
+        help="KEfED model id (kefedm-...)")
 
     # --- ANALYSIS stage: synthesized claims + evidence warrants ---
     # add-synthesized-claim
@@ -4703,21 +5143,22 @@ def main():
         "add-mechanism": cmd_add_mechanism,
         "ground-bundle": cmd_ground_bundle,
         "ensure-quality": cmd_ensure_quality,
+        "ensure-value-spec": cmd_ensure_value_spec,
+        "list-value-specs": cmd_list_value_specs,
         "ensure-entity": cmd_ensure_entity,
         "add-experiment": cmd_add_experiment,
+        "add-entity-node": cmd_add_entity_node,
         "add-process": cmd_add_process,
-        "link-entity": cmd_link_entity,
+        "link-entity": cmd_link_nodes,   # deprecated alias — routes to cmd_link_nodes
+        "link-nodes": cmd_link_nodes,
         "add-variable": cmd_add_variable,
         "bind-parameter": cmd_bind_parameter,
         "ensure-template": cmd_ensure_template,
-        "add-slot": cmd_add_slot,
-        "param-slot": cmd_param_slot,
         "list-templates": cmd_list_templates,
         "list-qualities": cmd_list_qualities,
         "list-entities": cmd_list_entities,
         "audit-terms": cmd_audit_terms,
         "instantiate-template": cmd_instantiate_template,
-        "bind-slot": cmd_bind_slot,
         "add-datum": cmd_add_datum,
         "add-reported-claim": cmd_add_reported_claim,
         "add-reported-gap": cmd_add_reported_gap,
@@ -4725,6 +5166,7 @@ def main():
         "show-experiment": cmd_show_experiment,
         "show-template": cmd_show_template,
         "show-instance": cmd_show_instance,
+        "show-data-signature": cmd_show_data_signature,
         "add-synthesized-claim": cmd_add_synthesized_claim,
         "add-evidence": cmd_add_evidence,
         "add-citation-impact": cmd_add_citation_impact,

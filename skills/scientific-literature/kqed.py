@@ -164,53 +164,106 @@ def ground_note(driver, note_id, fragment_ids):
 
 
 # ---------------------------------------------------------------- KEfED
-def add_kefed_model(driver, name, experiment_type_term, protocol, variables=None, mid=None):
-    """variables: list of (role, name, value_set, efo_label)."""
+def add_kefed_model(driver, name, experiment_type_term, variables=None, mid=None, definition=None):
+    """Insert a kefed-model (bigraph template) with a subject kefed-model-node
+    (typed by a fresh ooevv-material-entity def) carrying ooevv-variable elements
+    via kefed-node-variable.
+
+    2b.2 redesign: variables are no longer inserted directly into kefed-model-element;
+    they are attached to the subject kefed-model-node via kefed-node-variable.
+    The ooevv-element-set is linked via kefed-model-elementset relation
+    (retiring the eset-{mid} naming convention).
+
+    variables: list of (role, name, efo_label).
+      A 4-tuple (role, name, value_set, efo_label) is also accepted for backward
+      compatibility; value_set has no successor in the clean schema and is dropped.
+    definition: optional plain-English definition persisted on the kefed-model.
+    State is always 'template'.
+    """
     mid = mid or generate_id("kefedm")
     if not _exists(driver, mid):
         ts = get_timestamp()
+        eset_id = generate_id("eset")
+        subject_def_id = generate_id("ooevv")
+        subject_node_id = generate_id("knode")
+        defn_clause = f', has ooevv-definition "{escape_string(definition)}"' if definition else ""
         w(driver, f'insert $m isa kefed-model, has id "{mid}", has name "{escape_string(name)}", '
-                  f'has content "{escape_string(protocol)}", has format "kefed-protocol", has created-at {ts};')
+                  f'has kefed-model-state "template", has created-at {ts}{defn_clause};')
         classify(driver, mid, experiment_type_term, provenance="kefed experiment-type", confidence=0.9)
-        for (role, vname, vset, efo) in (variables or []):
-            vid = generate_id("kefedv")
-            w(driver, f'insert $v isa kefed-variable, has id "{vid}", has name "{escape_string(vname)}", '
-                      f'has kefed-variable-role "{escape_string(role)}", has kefed-value-set "{escape_string(vset)}", '
-                      f'has kefed-efo-label "{escape_string(efo)}", has created-at {ts};')
-            w(driver, f'match $m isa kefed-model, has id "{mid}"; $v isa kefed-variable, has id "{vid}"; '
-                      f'insert (model: $m, variable: $v) isa kefed-element;')
+        w(driver, f'insert $es isa ooevv-element-set, has id "{eset_id}", '
+                  f'has name "{escape_string(name)} elements";')
+        w(driver, f'match $m isa kefed-model, has id "{mid}"; '
+                  f'$es isa ooevv-element-set, has id "{eset_id}"; '
+                  f'insert (model: $m, element-set: $es) isa kefed-model-elementset;')
+        w(driver, f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                  f'insert $me isa ooevv-material-entity, has id "{subject_def_id}", '
+                  f'has name "{escape_string(name)} entity"; '
+                  f'(element-set: $es, element: $me) isa ooevv-set-element;')
+        w(driver, f'match $m isa kefed-model, has id "{mid}"; '
+                  f'$me isa ooevv-material-entity, has id "{subject_def_id}"; '
+                  f'insert $n isa kefed-model-node, has id "{subject_node_id}", '
+                  f'has name "{escape_string(name)} node", has created-at {ts}; '
+                  f'(node: $n, node-type: $me) isa kefed-node-type; '
+                  f'(model: $m, element: $n) isa kefed-model-element; '
+                  f'(model: $m, subject-node: $n) isa ooevv-subject;')
+        for var_tuple in (variables or []):
+            if len(var_tuple) == 4:
+                role, vname, _value_set, efo = var_tuple  # value_set dropped (no successor)
+            else:
+                role, vname, efo = var_tuple
+            vid = generate_id("ooevv")
+            q = (f'insert $v isa ooevv-variable, has id "{vid}", '
+                 f'has name "{escape_string(vname)}", '
+                 f'has ooevv-variable-role "{escape_string(role)}", '
+                 f'has created-at {ts}')
+            if efo:
+                q += f', has kefed-efo-label "{escape_string(efo)}"'
+            w(driver, q + ';')
+            w(driver, f'match $n isa kefed-model-node, has id "{subject_node_id}"; '
+                      f'$v isa ooevv-variable, has id "{vid}"; '
+                      f'insert (node: $n, variable: $v) isa kefed-node-variable;')
     return mid
 
 
-def add_observation(driver, investigation, kefed_model, statement, knowledge_level, bio_scale,
+def add_observation(driver, sensemaking_bundle, statement, knowledge_level, bio_scale,
                     about=None, oid=None):
+    """Insert a scilit-observation threaded under a scilit-paper-sensemaking bundle.
+
+    `about` (a paper id) is accepted for backward compatibility but unused; the
+    bundle already carries its paper via scilit-sensemaking-paper.
+    Threading is via scilit-sensemaking-observation (NOT the retired scilit-investigation-observation).
+    """
     oid = oid or generate_id("scobs")
     if _exists(driver, oid):
         return oid
     ts = get_timestamp()
-    w(driver, f'match $inv isa scilit-investigation, has id "{escape_string(investigation)}"; '
-              f'insert $o isa scilit-observation, has id "{oid}", has name "{escape_string(statement[:60])}", '
-              f'has content "{escape_string(statement)}", has scilit-knowledge-level "{escape_string(knowledge_level)}", '
+    w(driver, f'match $b isa scilit-paper-sensemaking, has id "{escape_string(sensemaking_bundle)}"; '
+              f'insert $o isa scilit-observation, has id "{oid}", '
+              f'has name "{escape_string(statement[:60])}", '
+              f'has content "{escape_string(statement)}", '
+              f'has scilit-knowledge-level "{escape_string(knowledge_level)}", '
               f'has scilit-bio-scale "{escape_string(bio_scale)}", has created-at {ts}; '
-              f'(investigation: $inv, observation: $o) isa scilit-investigation-observation;')
-    w(driver, f'match $o isa scilit-observation, has id "{oid}"; $m isa kefed-model, has id "{escape_string(kefed_model)}"; '
-              f'insert (observation: $o, model: $m) isa kefed-observed-via;')
-    if about:
-        w(driver, f'match $o isa scilit-observation, has id "{oid}"; $p isa scilit-paper, has id "{escape_string(about)}"; '
-                  f'insert (observation: $o, observed-paper: $p) isa scilit-observation-subject;')
+              f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation;')
     return oid
 
 
 # ---------------------------------------------------------------- gaps / hinges
-def add_gap(driver, investigation, category_term, knowledge_goal, provenance, statement, gid=None):
+def add_gap(driver, sensemaking_bundle, category_term, knowledge_goal, provenance, statement, gid=None):
+    """Insert a scilit-gap threaded under a scilit-paper-sensemaking bundle.
+
+    Threading is via scilit-sensemaking-reported-gap (NOT the retired scilit-investigation-gap).
+    `scilit-gap-provenance` is owned by scilit-gap; accepted values: explicit-cue | inferred-from-hinge | both.
+    """
     gid = gid or generate_id("scgap")
     if not _exists(driver, gid):
         ts = get_timestamp()
-        w(driver, f'match $inv isa scilit-investigation, has id "{escape_string(investigation)}"; '
-                  f'insert $g isa scilit-gap, has id "{gid}", has name "{escape_string(statement[:60])}", '
-                  f'has content "{escape_string(statement)}", has scilit-knowledge-goal "{escape_string(knowledge_goal)}", '
+        w(driver, f'match $b isa scilit-paper-sensemaking, has id "{escape_string(sensemaking_bundle)}"; '
+                  f'insert $g isa scilit-gap, has id "{gid}", '
+                  f'has name "{escape_string(statement[:60])}", '
+                  f'has content "{escape_string(statement)}", '
+                  f'has scilit-knowledge-goal "{escape_string(knowledge_goal)}", '
                   f'has scilit-gap-provenance "{escape_string(provenance)}", has created-at {ts}; '
-                  f'(investigation: $inv, gap: $g) isa scilit-investigation-gap;')
+                  f'(sensemaking: $b, reported-gap: $g) isa scilit-sensemaking-reported-gap;')
         classify(driver, gid, category_term, provenance="Boguslav et al. 2023", confidence=0.85)
     return gid
 

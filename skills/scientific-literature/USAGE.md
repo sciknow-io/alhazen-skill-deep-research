@@ -576,6 +576,11 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py set-
 These operate on a `--type deep-dive` investigation. Claims, evidence, and impacts land naturally
 in the `analysis` phase; the writeup belongs in `report` (use `record-phase`).
 
+> **Full text is a hard precondition for KQED ingestion.** `create-bundle` refuses a paper that
+> has no full text (no `alh-representation` to a fulltext artifact). Run `fetch-pdf --id <paper>`
+> (or `fetch-pdf --id <paper> --file <pdf>` for a local copy) first — you cannot sense-make a paper
+> you haven't got.
+
 ```bash
 # 1. Add a claim (type: primary | secondary | peripheral)
 uv run python .claude/skills/scientific-literature/scientific_literature.py add-claim \

@@ -132,6 +132,7 @@ Home `/` = hub: **Investigations** (cards = question + type badge) + **Collectio
 ## Reuse map
 
 `paper_identity.py`/`upsert_paper`; `kqed.py` `add_vocab/add_vocab_term/classify/add_observation/add_claim/
-add_hinge/add_bioentity/add_mech_link/add_gap/ground_note`; `prototypes/import_deepdive.py` (capture, +kind hint);
+add_hinge/add_bioentity/add_mech_link/add_gap/ground_note`;
 requests + `~/.alhazen/cache` HTTP convention; dashboard 4-slot build + `lib.ts:runScilit`/`atoms.tsx`/`tokens.ts`/
-`embedding-map.tsx` SVG. **Superseded:** the topic-centered version and any standalone `grounding_policy.yaml`.
+`embedding-map.tsx` SVG. **Superseded:** the topic-centered version, any standalone `grounding_policy.yaml`,
+and `prototypes/import_deepdive.py` (deleted — superseded by CLI re-curation via element-set + KEfED verbs).

@@ -75,8 +75,8 @@ attribute scilit-usage-type, value string;
 attribute scilit-investigation-status, value string;
 # scilit-phase: discovery|ingest|sensemaking|analysis|report
 attribute scilit-phase, value string;
-# Iteration/cycle index: an investigation and its stage notes can iterate over cycles.
-attribute scilit-iteration-number, value integer;
+# First-class iteration index: ordinal position of a scilit-iteration within its investigation.
+attribute scilit-iteration-index, value integer;
 
 # Investigation typing (retained, but the deep-dive/corpus distinction is retired:
 # a single-paper KQED run is now a scilit-paper-sensemaking note, not an investigation).
@@ -320,7 +320,7 @@ entity scilit-faceting-note sub alh-analysis-pipeline-note,
 # `owns` only.
 
 # SCILIT-SYNTHESIZED-CLAIM - a claim reasoned ACROSS many papers (analysis).
-# Distinct from scilit-reported-claim (a claim asserted WITHIN one paper - sensemaking).
+# Distinct from scilit-claim (a claim asserted WITHIN one paper - sensemaking).
 # Backed by scilit-evidence warrants; threaded under the investigation.
 entity scilit-synthesized-claim sub alh-analysis-note,
     owns scilit-claim-type,
@@ -328,7 +328,7 @@ entity scilit-synthesized-claim sub alh-analysis-note,
 
 
 # SCILIT-SYNTHESIZED-GAP - a knowledge gap reasoned ACROSS many papers (analysis).
-# Distinct from scilit-reported-gap (a gap stated WITHIN one paper - sensemaking).
+# Distinct from scilit-gap (a gap stated WITHIN one paper - sensemaking).
 entity scilit-synthesized-gap sub alh-analysis-note,
     owns scilit-knowledge-goal;
 
@@ -353,6 +353,16 @@ entity scilit-citation-impact sub alh-analysis-note,
 # ENTITY TYPES - Scientific Literature Investigations
 # -----------------------------------------------------------------------------
 
+# SCILIT-ITERATION - A first-class iteration (round) within an investigation, owning
+# its corpus configuration and stage notes for that round. Sub alh-note so it inherits
+# id, name, content, created-at, confidence, and all threading/aboutness plays.
+entity scilit-iteration sub alh-note,
+    owns scilit-iteration-index,
+    plays scilit-investigation-iteration:iteration,
+    plays scilit-iteration-corpus:iteration,
+    plays scilit-iteration-stage:iteration;
+
+
 # SCILIT-INVESTIGATION - A named, dated, purpose-driven inquiry. Typed by
 # scilit-investigation-type: `corpus` (the default - aboutness subject is a
 # scilit-corpus) or `deep-dive` (aboutness subject is a single focal scilit-paper;
@@ -367,8 +377,7 @@ entity scilit-citation-impact sub alh-analysis-note,
 entity scilit-investigation sub alh-note,
     owns scilit-investigation-status,
     owns scilit-investigation-type,
-    owns scilit-investigation-question,
-    owns scilit-iteration-number;
+    owns scilit-investigation-question;
 
 
 # SCILIT-INVESTIGATION-PHASE - A single phase note threaded under an investigation.
@@ -379,8 +388,7 @@ entity scilit-investigation sub alh-note,
 # from alh-note. One phase note per (investigation, phase) is enforced by the
 # record-phase upsert in the CLI.
 entity scilit-investigation-phase sub alh-note,
-    owns scilit-phase,
-    owns scilit-iteration-number;
+    owns scilit-phase;
 
 
 # Additive extension: core artifact type owns full-text kind
@@ -426,8 +434,6 @@ relation scilit-dataset-usage,
 # =============================================================================
 
 # --- structural attributes ---
-attribute kefed-variable-role, value string;     # parameter | constant | measurement
-attribute kefed-value-set, value string;         # e.g. "WT|KO"
 attribute kefed-efo-label, value string;         # EFO factor annotation (text)
 attribute scilit-knowledge-level, value string;  # observation|association|assertion|prediction (Biolink)
 attribute scilit-bio-scale, value string;        # molecular|cellular|tissue|organism
@@ -437,14 +443,6 @@ attribute scilit-mech-type, value string;        # activates|inhibits|maintains|
 attribute scilit-hinge-term-id, value string;    # soft FK to a Teufel-CFC alh-vocabulary-type
 
 # --- relations ---
-relation kefed-element,           # a KEfED model groups its design variables
-    relates model,
-    relates variable;
-
-relation kefed-observed-via,      # an observation instantiates a KEfED model (template)
-    relates observation,
-    relates model;
-
 relation kefed-licenses,          # warrant table as data: experiment-type term -> warrant term
     relates licensing-type,
     relates licensed-warrant;
@@ -510,23 +508,10 @@ relation scilit-mechanistic-link sub scilit-relation, # System-3 causal edge (a 
     relates mech-target;
 
 # --- entities ---
-# KEFED-MODEL - an experimental design (protocol) as an information artifact.
-# Experiment type via alh-classification -> experiment-type vocab term;
-# warrant DERIVED by following that term's kefed-licenses edge (not stored here).
+# KEFED-MODEL - the bigraph (built from one element-set). Roles defined in OOEVV section below.
 entity kefed-model sub alh-artifact,
-    plays kefed-element:model,
-    plays kefed-observed-via:model;
-
-# KEFED-VARIABLE - a design element (independent var, constant, or measurement).
-entity kefed-variable sub alh-domain-thing,
-    owns kefed-variable-role,
-    owns kefed-value-set,
-    owns kefed-efo-label,
-    owns scilit-curie,                 # grounded ontology concept for the variable (e.g. EFO:age, CL:...)
-    owns scilit-grounding-label,
-    owns scilit-grounding-state,
-    owns scilit-grounding-confidence,
-    plays kefed-element:variable;
+    plays kefed-model-element:model,
+    plays ooevv-subject:model;
 
 # SCILIT-PAPER-SENSEMAKING - the per-paper sensemaking bundle: what one KQED run over a
 # single paper produces. Lives in an investigation's SENSEMAKING stage, is `about` exactly
@@ -535,25 +520,24 @@ entity kefed-variable sub alh-domain-thing,
 entity scilit-paper-sensemaking sub alh-sensemaking-note;
 
 # OBSERVATION - a measurement-in-context; immutable, background-free (System 2, D node).
-# Tied to its KEfED design frame via kefed-observed-via (measurement = f(parameter|constant)).
 entity scilit-observation sub alh-sensemaking-note,
     owns scilit-knowledge-level,
     owns scilit-bio-scale,
-    plays kefed-observed-via:observation,
     plays scilit-addresses:addressing-note;
 
-# SCILIT-REPORTED-CLAIM - a claim asserted WITHIN one paper (sensemaking). Support is
+# SCILIT-CLAIM - a claim asserted WITHIN one paper (sensemaking). Support is
 # per-claim: internal observations (scilit-claim-observation) and/or external citations
-# (scilit-hinge to another paper or its reported-claim).
-entity scilit-reported-claim sub alh-sensemaking-note,
+# (scilit-hinge to another paper or its claim). Span-anchored to a scilit-sentence
+# (or other alh-fragment) via alh-derivation (inherited from alh-information-content-entity).
+entity scilit-claim sub alh-sensemaking-note,
     owns scilit-claim-type,
     owns scilit-claim-statement,
     owns scilit-rhetorical-role,       # AZ / argumentative zone within the paper's discourse
     plays scilit-addresses:addressing-note,
     plays scilit-claim-mechanism:claim;
 
-# SCILIT-REPORTED-GAP - a gap stated WITHIN one paper (sensemaking).
-entity scilit-reported-gap sub alh-sensemaking-note,
+# SCILIT-GAP - a knowledge gap stated WITHIN one paper (sensemaking).
+entity scilit-gap sub alh-sensemaking-note,
     owns scilit-knowledge-goal,
     owns scilit-gap-provenance,
     plays scilit-addresses:gap;
@@ -579,15 +563,26 @@ entity alh-vocabulary-type plays kefed-licenses:licensing-type,
 # declare explicit plays for each specialized role (TypeDB does not infer them).
 # =============================================================================
 
+# --- iteration layer: investigation owns an ordered sequence of first-class iterations ---
+
+# investigation -> ordered iteration (a first-class round of corpus-config + stage work)
+relation scilit-investigation-iteration,
+    relates investigation, relates iteration;
+
+# iteration -> corpus (this round's paper set / corpus configuration)
+relation scilit-iteration-corpus,
+    relates iteration, relates corpus;
+
+# iteration -> stage note (one note per stage per round, replacing investigation-phasing)
+relation scilit-iteration-stage,
+    relates iteration, relates stage;
+
+
 # --- stage spine + investigation-level edges (sub alh-note-threading / alh-aboutness) ---
 
 # investigation -> grounding-policy
 relation scilit-investigation-grounding sub alh-note-threading,
     relates investigation as parent-note, relates policy as child-note;
-
-# investigation -> stage note (one per stage per iteration)
-relation scilit-investigation-phasing sub alh-note-threading,
-    relates investigation as parent-note, relates phase as child-note;
 
 # investigation -> corpus (its PRIMARY analyzed paper set; exactly one per investigation)
 relation scilit-investigation-scope sub alh-aboutness,
@@ -632,13 +627,20 @@ relation scilit-sensemaking-reported-gap sub alh-note-threading,
 relation scilit-sensemaking-mechanism,
     relates sensemaking, relates mechanism;
 
+# bundle -> a KEfED experiment (model template or instance run) belonging to this paper
+relation scilit-sensemaking-experiment,
+    relates sensemaking, relates experiment;
+entity scilit-paper-sensemaking plays scilit-sensemaking-experiment:sensemaking;
+entity kefed-model plays scilit-sensemaking-experiment:experiment;
+entity kefed-instance plays scilit-sensemaking-experiment:experiment;
+
 # reported-claim -> the mechanistic-link(s) it asserts (so each mechanism traces to its claim)
 relation scilit-claim-mechanism,
     relates claim, relates mechanism;
 
-# reported-claim -> observation (internal data support)
-relation scilit-claim-observation sub alh-note-threading,
-    relates reported-claim as parent-note, relates observation as child-note;
+# claim -> observation (internal data support / provenance grounds)
+relation scilit-claim-observation,
+    relates claim, relates observation;
 
 # --- ANALYSIS stage: synthesized claims/gaps, evidence warrants, citation impact ---
 
@@ -677,7 +679,7 @@ relation scilit-synthesis-concept sub alh-aboutness,
 # --- explicit plays for the specialized roles ---
 entity scilit-investigation
     plays scilit-investigation-grounding:investigation,
-    plays scilit-investigation-phasing:investigation,
+    plays scilit-investigation-iteration:investigation,
     plays scilit-investigation-scope:investigation,
     plays scilit-investigation-aux-corpus:investigation,
     plays scilit-investigation-focus:investigation,
@@ -687,7 +689,7 @@ entity scilit-investigation
     plays scilit-investigation-synthesis:investigation;
 
 entity scilit-investigation-phase
-    plays scilit-investigation-phasing:phase,
+    plays scilit-iteration-stage:stage,
     plays scilit-phase-faceting:phase,
     plays scilit-phase-sensemaking:phase;
 
@@ -703,14 +705,14 @@ entity scilit-observation
     plays scilit-sensemaking-observation:observation,
     plays scilit-claim-observation:observation;
 
-entity scilit-reported-claim
+entity scilit-claim
     plays scilit-sensemaking-reported-claim:reported-claim,
-    plays scilit-claim-observation:reported-claim,
+    plays scilit-claim-observation:claim,
     plays scilit-evidence-grounds:ground-claim,
     plays scilit-hinge:hinging-claim,
     plays scilit-hinge:hinged-to;
 
-entity scilit-reported-gap
+entity scilit-gap
     plays scilit-sensemaking-reported-gap:reported-gap;
 
 entity scilit-synthesized-claim
@@ -746,7 +748,8 @@ entity scilit-paper
     plays scilit-hinge:hinged-to;
 
 entity scilit-corpus plays scilit-investigation-scope:corpus,
-    plays scilit-investigation-aux-corpus:corpus;
+    plays scilit-investigation-aux-corpus:corpus,
+    plays scilit-iteration-corpus:corpus;
 
 entity scilit-ontology-term plays scilit-synthesis-concept:concept;
 
@@ -767,60 +770,109 @@ attribute ooevv-max, value double;
 attribute ooevv-allowed-value, value string;  # nominal/binary allowed value
 attribute ooevv-named-rank, value string;      # ordinal rank label (in order)
 
+# --- element vocabulary attributes ---
+attribute ooevv-variable-role, value string;   # constant | parameter | measurement
+attribute ooevv-ice-kind, value string;        # measurement | derived (for ICE variables in the bigraph)
+attribute ooevv-param-rule-kind, value string; # passthrough | aggregate-collapse-destroy | combine | derive
+
 # --- relations (variable structure) ---
 relation ooevv-measures,                       # ExperimentalVariable measures a Quality
     relates measured-variable, relates quality;
 relation ooevv-has-scale,                      # ExperimentalVariable has exactly one MeasurementScale
     relates scaled-variable, relates scale;
+relation ooevv-quality-scale,                  # a Quality's canonical value-specifications (reusable scales)
+    relates quality, relates scale;            # e.g. age -> {ordinal young<old} + {numeric days}
 relation ooevv-scale-parts,                    # CompositeScale hasParts sub-variables
     relates composite-scale, relates part-variable;
+
+# --- relation (element vocabulary grouping) ---
+relation ooevv-set-element,                    # an element-set groups its elements
+    relates element-set, relates element;
+
+# --- KEfED bigraph relations ---
+relation kefed-model-element,                  # a model groups the nodes that form its bigraph
+    relates model, relates element;
+relation ooevv-subject,                        # the model's SOURCE node (experimental subject)
+    relates model, relates subject-node;
+
+# --- node-graph relations (kefed-model-node graph layer) ---
+relation kefed-node-type,                      # a node is typed by an OOEVV definition
+    relates node, relates node-type;
+relation kefed-node-variable,                  # a node carries an OOEVV variable (measurement or parameter)
+    relates node, relates variable;
 
 # --- relations (protocol graph) ---
 relation ooevv-process-decomposition,          # a process decomposes into sub-processes (arbitrary depth)
     relates parent-process, relates sub-process;
-relation ooevv-process-input,                  # material flow: entity consumed by a process
-    relates input-entity, relates consuming-process;
-relation ooevv-process-output,                 # material flow: entity produced by a process
-    relates producing-process, relates output-entity;
-relation ooevv-parameter-binding,              # independent variable set AT a process step (the KEfED dependency)
-    relates binding-process, relates bound-parameter;
+relation ooevv-process-input,                  # material flow: input node consumed by a consuming node
+    relates input-node, relates consuming-node;
+relation ooevv-process-output,                 # material flow: producing node outputs to output node
+    relates producing-node, relates output-node;
 relation ooevv-parameter-target,               # a parameter's value targets a curated entity (specificity)
     relates targeting-parameter, relates target-entity;
-relation ooevv-produced-by,                    # measurement produced by the terminal process
-    relates produced-measurement, relates terminal-process;
-relation ooevv-set-process,                    # element-set groups its processes
-    relates container, relates contained-process;
-relation ooevv-set-entity,                     # element-set groups its entities
-    relates container, relates contained-entity;
-relation ooevv-bundle-experiment,              # a paper's sensemaking bundle groups its SEPARATE experiments
-    relates bundle, relates experiment;        # (one element-set / protocol graph per distinct experiment)
-
+relation ooevv-param-mapping,                  # how a data-transformation maps input params to output params
+    relates transformation,
+    relates in-parameter,
+    relates out-parameter,
+    owns ooevv-param-rule-kind;
 # --- entities ---
+
+# ELEMENT - base for everything an element-set contains (concrete parent, not abstract).
+entity ooevv-element sub alh-domain-thing,
+    owns ooevv-definition, owns ooevv-long-form, owns scilit-curie,
+    owns scilit-grounding-state, owns scilit-grounding-label, owns scilit-grounding-confidence,
+    plays ooevv-set-element:element;
+
+# ELEMENT-SET - reusable vocabulary commitment for a CLASS of experiments (e.g. "RNASeq").
+entity ooevv-element-set sub alh-artifact,
+    owns ooevv-definition,
+    plays ooevv-set-element:element-set;
+
+# ENTITY split: material entity (obo:BFO_0000040) vs ICE (obo:IAO_0000030).
+# ooevv-material-entity is now pure OOEVV vocabulary: it no longer plays bigraph roles directly.
+# kefed-model-node nodes typed by ooevv-material-entity carry the bigraph roles.
+entity ooevv-material-entity sub ooevv-element,        # obo:BFO_0000040
+    plays kefed-node-type:node-type,
+    plays ooevv-parameter-target:target-entity;
+
 # QUALITY - curated generic measurand (concentration, signal-intensity, viability...). Reusable vocab.
-entity ooevv-quality sub alh-vocabulary-type,
-    owns ooevv-definition,
-    owns scilit-curie,                  # optional external hook
-    owns scilit-grounding-confidence,
-    plays ooevv-measures:quality;
+entity ooevv-quality sub ooevv-element,
+    plays ooevv-measures:quality,
+    plays ooevv-quality-scale:quality;
 
-# PROCESS - a protocol step; hierarchical, consumes/produces entities, binds parameters.
-entity ooevv-process sub alh-domain-thing,
-    owns ooevv-definition,
+# VARIABLE - an ICE that takes values (obo:IAO_0000030); grounds to EFO via kefed-efo-label.
+# ooevv-variable is now pure OOEVV vocabulary: it no longer plays bigraph roles directly.
+# kefed-model-node nodes carry variables via kefed-node-variable:variable.
+entity ooevv-variable sub ooevv-element,               # obo:IAO_0000030
+    owns ooevv-variable-role,
+    owns ooevv-ice-kind,
+    owns kefed-efo-label,
+    plays kefed-node-variable:variable,
+    plays ooevv-measures:measured-variable,
+    plays ooevv-has-scale:scaled-variable,
+    plays ooevv-scale-parts:part-variable,
+    plays ooevv-parameter-target:targeting-parameter,
+    plays ooevv-param-mapping:in-parameter,
+    plays ooevv-param-mapping:out-parameter;
+
+# PROCESS - a protocol step (obo:BFO_0000015); hierarchical. Pure OOEVV vocabulary: bigraph roles
+# are carried by kefed-model-node nodes typed by this process definition. Process decomposition
+# (sub-step hierarchy within a vocabulary definition) is unchanged.
+entity ooevv-process sub ooevv-element,                # obo:BFO_0000015
+    plays kefed-node-type:node-type,
     plays ooevv-process-decomposition:parent-process,
-    plays ooevv-process-decomposition:sub-process,
-    plays ooevv-process-input:consuming-process,
-    plays ooevv-process-output:producing-process,
-    plays ooevv-parameter-binding:binding-process,
-    plays ooevv-produced-by:terminal-process,
-    plays ooevv-set-process:contained-process;
-entity ooevv-assay sub ooevv-process;                 # a measurement-producing assay (qPCR, western blot)
-entity ooevv-material-processing sub ooevv-process;   # a sample-prep / transformation of material
-entity ooevv-data-transformation sub ooevv-process;   # an analysis/computation step
+    plays ooevv-process-decomposition:sub-process;
+# Subtypes inherit kefed-node-type:node-type from ooevv-process (SVL42 -- do NOT redeclare).
+entity ooevv-assay sub ooevv-process;                  # obo:OBI_0000070
+entity ooevv-material-processing sub ooevv-process;    # obo:OBI_0000094
+entity ooevv-data-transformation sub ooevv-process,    # obo:OBI_0200000
+    plays ooevv-param-mapping:transformation;
 
-# SCALE - the computational type of a variable's values (one per variable).
-entity ooevv-scale sub alh-domain-thing,
+# SCALE - the computational type of a variable's values (keep OOEVV's own taxonomy).
+entity ooevv-scale sub ooevv-element,
     owns ooevv-unit,
-    plays ooevv-has-scale:scale;
+    plays ooevv-has-scale:scale,
+    plays ooevv-quality-scale:scale;
 entity ooevv-nominal-scale sub ooevv-scale, owns ooevv-allowed-value @card(0..);
 entity ooevv-binary-scale sub ooevv-scale, owns ooevv-allowed-value @card(0..);
 entity ooevv-ordinal-scale sub ooevv-scale, owns ooevv-named-rank @card(0..);
@@ -829,106 +881,86 @@ entity ooevv-file-scale sub ooevv-scale;
 entity ooevv-composite-scale sub ooevv-scale,
     plays ooevv-scale-parts:composite-scale;
 
-# --- additive plays on existing types ---
-# kefed-variable IS the OOEVV ExperimentalVariable (already owns kefed-variable-role + grounding hooks).
-entity kefed-variable
-    plays ooevv-measures:measured-variable,
-    plays ooevv-has-scale:scaled-variable,
-    plays ooevv-scale-parts:part-variable,
-    plays ooevv-parameter-binding:bound-parameter,
-    plays ooevv-parameter-target:targeting-parameter,
-    plays ooevv-produced-by:produced-measurement,
-    owns ooevv-definition;
-# kefed-model IS the OOEVV ElementSet = ONE experiment (a paper may have several).
-entity kefed-model
-    plays ooevv-set-process:container,
-    plays ooevv-set-entity:container,
-    plays ooevv-bundle-experiment:experiment;
-# scilit-paper-sensemaking (the per-paper bundle) groups the paper's separate experiments.
-entity scilit-paper-sensemaking
-    plays ooevv-bundle-experiment:bundle;
-# scilit-entity is the curated material/specificity entity (already owns entity-kind + grounding hooks).
-entity scilit-entity
-    plays ooevv-process-input:input-entity,
-    plays ooevv-process-output:output-entity,
-    plays ooevv-parameter-target:target-entity,
-    plays ooevv-set-entity:contained-entity,
-    owns ooevv-definition;
+
+# KEFED-MODEL-NODE - a node in a kefed-model graph. Typed by an OOEVV definition
+# (via kefed-node-type); carries its variables (via kefed-node-variable); plays all
+# bigraph structural roles (subject, input/output flow, model membership).
+entity kefed-model-node sub alh-domain-thing,
+    plays kefed-model-element:element,
+    plays ooevv-subject:subject-node,
+    plays ooevv-process-input:input-node,
+    plays ooevv-process-input:consuming-node,
+    plays ooevv-process-output:producing-node,
+    plays ooevv-process-output:output-node,
+    plays kefed-node-type:node,
+    plays kefed-node-variable:node,
+    plays ooevv-parameter-target:target-entity;
 
 
 # =============================================================================
-# KEfED TEMPLATE / INSTANCE / DATA layer - curation by recognize-reuse-fill
-# A kefed-template is a REUSABLE experiment design (protocol graph + variable
-# definitions + typed slots). A kefed-instance is one paper's EXECUTION of a
-# template: it fills the slots with curated entities and carries the data rows
-# (a spreadsheet linking independent-variable values to the measured dependent
-# value). Curating a new paper = recognize the template, reuse it, fill it.
+# KEfED INSTANCE / DATA layer - curation by recognize-reuse-fill
+# Template = a kefed-model in "template" state (no instantiated variables).
+# A kefed-instance records one paper's execution: value-instantiations (data
+# rows) + warrant. Retired: kefed-template, kefed-slot, ooevv-slot-binding,
+# kefed-template-slot, ooevv-param-slot, kefed-variable (Task 5, Jun 2026).
 # =============================================================================
 
 # --- attributes ---
-attribute kefed-slot-role, value string;   # target-gene | normalization-control | grouping | treatment | ...
-attribute kefed-slot-kind, value string;   # gene | chemical | cell-type | antibody | ...
-attribute ooevv-cell-value, value string;  # the value a variable took in a data row (independent or measured)
-attribute ooevv-cell-number, value double; # numeric form of the cell value (for aggregation), optional
+attribute kefed-model-state, value string; # template (no values bound) | instantiated
+attribute scilit-warrant, value string;    # what the instance's data licenses (derived from index sets)
+attribute kefed-cell-value, value string;  # the value a variable took in a data row (independent or measured)
+attribute kefed-cell-number, value double; # numeric form of the cell value (for aggregation), optional
 
-# --- relations (template layer) ---
-relation kefed-template-slot,              # a template declares its typed slots
-    relates template, relates slot;
-relation ooevv-param-slot,                 # a template variable (parameter/measurement) references a slot
-    relates slotted-variable, relates slot;
+# --- additive owns on kefed-model ---
+entity kefed-model owns kefed-model-state;
 
 # --- relations (instance layer) ---
-relation ooevv-instance-of,                # an instance is an execution of a template
-    relates instance, relates template;
-relation ooevv-slot-binding,               # an instance fills a template slot with a curated entity
-    relates instance, relates slot, relates filler;
-relation ooevv-instance-datum,             # an instance groups its data rows
+relation kefed-instance-of,                # an instance is an execution of a model (model-state: template)
+    relates instance, relates model;
+relation kefed-instance-datum,             # an instance groups its data rows
     relates instance, relates datum;
-relation ooevv-cell,                       # one cell = the value a template variable took in a datum row
+relation kefed-cell,                       # one cell = the value a variable took in a datum row
     relates datum, relates cell-variable,
-    owns ooevv-cell-value, owns ooevv-cell-number;
-relation ooevv-datum-observation,          # coexistence: a data row links to its free-text observation (provenance)
+    owns kefed-cell-value, owns kefed-cell-number;
+relation kefed-datum-observation,          # a data row links to its free-text observation (provenance)
     relates datum, relates observation;
 
-# --- entities ---
-# TEMPLATE - reusable experiment design; groups its processes + variable definitions, declares slots.
-entity kefed-template sub alh-artifact,
-    owns ooevv-definition,
-    plays kefed-element:model,              # groups its reusable design variables
-    plays ooevv-set-process:container,
-    plays ooevv-set-entity:container,
-    plays kefed-template-slot:template,
-    plays ooevv-instance-of:template;
-
-# SLOT - a typed placeholder in a template, filled per-instance (target-gene, normalization-control...).
-entity kefed-slot sub alh-domain-thing,
-    owns kefed-slot-role,
-    owns kefed-slot-kind,
-    plays kefed-template-slot:slot,
-    plays ooevv-param-slot:slot,
-    plays ooevv-slot-binding:slot;
-
-# INSTANCE - one paper's execution of a template; fills slots + carries data rows; grouped under a bundle.
+# INSTANCE - one paper's execution of a model; carries data rows + warrant.
 entity kefed-instance sub alh-artifact,
-    plays ooevv-instance-of:instance,
-    plays ooevv-slot-binding:instance,
-    plays ooevv-instance-datum:instance,
-    plays ooevv-bundle-experiment:experiment;
+    owns scilit-warrant,
+    plays kefed-instance-of:instance,
+    plays kefed-instance-datum:instance;
 
-# DATUM - one data row of an instance; cells hold per-variable values; links to a provenance observation.
-entity ooevv-datum sub alh-domain-thing,
-    plays ooevv-instance-datum:datum,
-    plays ooevv-cell:datum,
-    plays ooevv-datum-observation:datum;
+# DATUM - one data row; cells hold per-variable values; links to its provenance observation.
+entity kefed-row sub alh-domain-thing,
+    plays kefed-instance-datum:datum,
+    plays kefed-cell:datum,
+    plays kefed-datum-observation:datum;
 
 # --- additive plays on existing types ---
-# a template variable may reference a slot, and may take a per-row value in a data cell
-entity kefed-variable plays ooevv-param-slot:slotted-variable,
-    plays ooevv-cell:cell-variable;
-# curated entities fill instance slots
-entity scilit-entity plays ooevv-slot-binding:filler;
+entity kefed-model plays kefed-instance-of:model;
+entity ooevv-variable plays kefed-cell:cell-variable;
 # the free-text observation a data row links to for provenance/coexistence
-entity scilit-observation plays ooevv-datum-observation:observation;
+entity scilit-observation plays kefed-datum-observation:observation;
+
+
+# =============================================================================
+# KEFED-MODEL: first-class element-set link + model-level definitions (Task 3a.1)
+# Retiring the eset-{model_id} naming convention: a named relation links a model
+# to its element-set so element-sets are reusable ontology containers that can be
+# shared by many models.
+# =============================================================================
+
+# relation must be declared before the plays extensions below
+relation kefed-model-elementset,
+    relates model, relates element-set;
+
+# a kefed-model carries its own plain-English definition + abbreviation expansion
+entity kefed-model owns ooevv-definition, owns ooevv-long-form;
+
+# plays extensions: kefed-model and ooevv-element-set join the new relation
+entity kefed-model plays kefed-model-elementset:model;
+entity ooevv-element-set plays kefed-model-elementset:element-set;
 
 
 # =============================================================================
@@ -940,12 +972,8 @@ entity scilit-observation plays ooevv-datum-observation:observation;
 # long-form as a crisp expansion and the definition as the fuller explanation.
 # =============================================================================
 attribute ooevv-long-form, value string;
-entity ooevv-quality owns ooevv-long-form;
-entity ooevv-process owns ooevv-long-form;
-entity kefed-variable owns ooevv-long-form;
-entity kefed-template owns ooevv-long-form;
+# ooevv-quality and ooevv-process inherit ooevv-long-form from ooevv-element (no redeclaration needed).
 entity scilit-entity owns ooevv-long-form;
-entity kefed-slot owns ooevv-definition, owns ooevv-long-form;
 
 
 # =============================================================================
