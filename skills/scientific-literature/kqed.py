@@ -226,20 +226,26 @@ def add_kefed_model(driver, name, experiment_type_term, variables=None, mid=None
 
 
 def add_observation(driver, sensemaking_bundle, statement, knowledge_level, bio_scale,
-                    about=None, oid=None):
+                    about=None, oid=None, source_label=None):
     """Insert a scilit-observation threaded under a scilit-paper-sensemaking bundle.
 
     `about` (a paper id) is accepted for backward compatibility but unused; the
     bundle already carries its paper via scilit-sensemaking-paper.
     Threading is via scilit-sensemaking-observation (NOT the retired scilit-investigation-observation).
+
+    `source_label` is the evidence source-locator (e.g. "OF4DF" = Figure 4 panels D,F;
+    "OSF3B" = Supplemental Figure 3 panel B; "OE5" = Experiment 5; "OX" = text-only).
+    When given it becomes the observation `name` verbatim; the full text always lives
+    in `content`. See docs/observation-source-labeling.md for the grammar.
     """
     oid = oid or generate_id("scobs")
     if _exists(driver, oid):
         return oid
     ts = get_timestamp()
+    name = source_label or statement[:60]
     w(driver, f'match $b isa scilit-paper-sensemaking, has id "{escape_string(sensemaking_bundle)}"; '
               f'insert $o isa scilit-observation, has id "{oid}", '
-              f'has name "{escape_string(statement[:60])}", '
+              f'has name "{escape_string(name)}", '
               f'has content "{escape_string(statement)}", '
               f'has scilit-knowledge-level "{escape_string(knowledge_level)}", '
               f'has scilit-bio-scale "{escape_string(bio_scale)}", has created-at {ts}; '

@@ -169,6 +169,25 @@ wrong, **OMIT the grounding** — better ungrounded-with-a-precise-local-definit
 → `link-nodes --role input|output` → `ensure-quality [--curie]` → `ensure-value-spec --quality
 --scale-type` → `add-variable --value-spec` → `show-experiment` / `show-data-signature` to verify.
 
+## Sensemaking — label observations by their evidence source
+
+When adding a `scilit-observation`, give it a **source-locator label** (`add-observation
+--source-label`) so its evidence locus is legible at a glance. The label becomes the note
+`name`; the full statement always stays in `content`. The evidence is **not always a main
+figure** — cover all cases:
+
+- `OF4DF` — main **F**igure 4, panels D & F   ·   `OF2A-G` — Figure 2, panels A through G
+- `OSF3B` — **S**upplemental **F**igure 3, panel B
+- `OT2` / `OST1` — **T**able 2 / **S**upplemental **T**able 1
+- `OE5` — **E**xperiment 5 (a result reported only in text/Methods, no display item)
+- `OX` — text-only narrative assertion (no figure/table/experiment)
+- `OF2A+SF4C` — one observation read off **multiple** loci (join with `+`)
+
+Prefer the most specific display item (main-figure panel > supplemental > table); fall back
+to `E<n>` for figure-less experimental results and `X` for pure narrative. Legacy seed form
+`O4DF` (bare figure digit) is still accepted but write `OF4DF`. Full grammar:
+[`docs/observation-source-labeling.md`](docs/observation-source-labeling.md).
+
 ---
 
 **Read USAGE.md before executing commands** -- full command reference, source-specific options,

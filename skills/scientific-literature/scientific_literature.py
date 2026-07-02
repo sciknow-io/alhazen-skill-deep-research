@@ -30,6 +30,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -3468,6 +3469,38 @@ def cmd_create_bundle(args):
                       "investigation": args.investigation, "iteration": iteration}, indent=2))
 
 
+# Observation source-locator label grammar (see docs/observation-source-labeling.md).
+# A source token = optional 'S' (supplemental/supporting-info) + a type letter
+# (F figure | T table | E experiment | X free-text) + optional number + optional
+# panel letters (ranges allowed, e.g. D-F). Multiple loci join with '+'. Legacy
+# SIRT3-seed form used a bare figure digit (O4DF == OF4DF), still accepted.
+_SRCLBL_TOKEN = re.compile(r'^S?[FTEX]\d*(?:[A-Z](?:-[A-Z])?)*$')
+_SRCLBL_LEGACY = re.compile(r'^\d+(?:[A-Z](?:-[A-Z])?)*$')
+
+
+def validate_source_label(label):
+    """Loosely validate an observation source-locator label.
+
+    Returns (ok: bool, note: str | None). This is a *convention*, not a schema
+    constraint: a note is advisory and the caller should still store the label
+    (warn, don't block). See docs/observation-source-labeling.md for the grammar.
+    """
+    if not label or label[0] != 'O':
+        return False, "source-label should start with 'O' (observation)"
+    body = label[1:]
+    if not body:
+        return False, "source-label needs at least one source token after 'O'"
+    for tok in body.split('+'):
+        if _SRCLBL_TOKEN.match(tok):
+            continue
+        if _SRCLBL_LEGACY.match(tok):
+            return True, (f"token '{tok}' uses the legacy bare-figure form; prefer explicit "
+                          f"'F{tok}' (main figure). See docs/observation-source-labeling.md")
+        return False, (f"token '{tok}' is not a valid source locator "
+                       f"(expected e.g. F4DF, SF3B, T2, E5, X). See docs/observation-source-labeling.md")
+    return True, None
+
+
 def cmd_add_observation(args):
     """Add a scilit-observation (measurement-in-context) to a sensemaking bundle.
 
@@ -3481,7 +3514,17 @@ def cmd_add_observation(args):
     """
     obs_id = generate_id("scobs")
     ts = get_timestamp()
-    name = (args.name or args.statement)[:60]
+    # A source-locator label (e.g. OF4DF) becomes the observation's `name` verbatim
+    # so its evidence locus is legible at a glance; the full text always lives in
+    # `content`. Absent a label, fall back to --name or a truncated statement.
+    label = getattr(args, "source_label", None)
+    if label:
+        ok, note = validate_source_label(label)
+        if note:
+            print(f"[warn] source-label: {note}", file=sys.stderr)
+        name = label
+    else:
+        name = (args.name or args.statement)[:60]
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             b = list(tx.query(
@@ -3499,7 +3542,10 @@ def cmd_add_observation(args):
                 f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation;'
             ).resolve()
             tx.commit()
-    print(json.dumps({"success": True, "observation_id": obs_id, "bundle": args.bundle}, indent=2))
+    out = {"success": True, "observation_id": obs_id, "bundle": args.bundle}
+    if label:
+        out["source_label"] = label
+    print(json.dumps(out, indent=2))
 
 
 def cmd_add_mechanism(args):
@@ -4856,6 +4902,10 @@ def main():
     p.add_argument("--bio-scale", required=True, dest="bio_scale",
         help="molecular|cellular|tissue|organism")
     p.add_argument("--name", help="Short name (optional)")
+    p.add_argument("--source-label", dest="source_label",
+        help="Evidence source-locator (e.g. OF4DF=Fig4 panels D,F; OSF3B=Suppl Fig3 B; "
+             "OT2=Table2; OE5=Experiment5; OX=text-only). Becomes the observation name. "
+             "See docs/observation-source-labeling.md")
     p.add_argument("--experiment-type", dest="experiment_type",
         help="KEfED design frame: the experiment/assay type (creates a kefed-model)")
     p.add_argument("--variables",

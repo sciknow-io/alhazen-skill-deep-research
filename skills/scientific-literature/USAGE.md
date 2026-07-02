@@ -673,6 +673,13 @@ S2/S3 (KEfED, bio-mechanism):
   occasion, e.g. "CAIS 2026 keynote"). This is distinct from the KQED epistemic
   `scilit-observation` (a measurement-in-context, System 2 / KEfED D-node).
 
+> **Observation source-locator labels.** When adding a `scilit-observation`, name it with
+> a source-locator via `add-observation --source-label` (e.g. `OF4DF` = Figure 4 panels
+> D,F; `OSF3B` = Supplemental Figure 3B; `OT2` = Table 2; `OE5` = Experiment 5 with no
+> figure; `OX` = text-only). The label becomes the note `name`; the full text stays in
+> `content`. Full grammar (figures, supplemental figures, tables, experiments, multi-locus
+> `+`): [`docs/observation-source-labeling.md`](docs/observation-source-labeling.md).
+
 ---
 
 ## Source Connector Details
