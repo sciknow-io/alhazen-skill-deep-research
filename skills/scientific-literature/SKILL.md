@@ -134,6 +134,13 @@ A KEfED model (`kefed-model`, authored under a bundle with `add-experiment`) is 
    `add-entity-node` / `add-process` find-or-create a def by name **within the model's element-set**, so
    pass `add-experiment --element-set <id>` to make a family of experiments **share one element-set** and
    thus one def per concept (verify: distinct defs ≪ node count).
+   **A node name is the KIND of thing, never its specifics.** Strip every specific out of the name and
+   move it into a variable: `C57BL/6 male mouse` → `mouse` (+ `strain`, `sex`, `species`);
+   `aged mouse tail-tip fibroblasts` → `fibroblast` (+ `tissue source`, `donor age state`, `species`);
+   `MeV-derived iPSC clones` → `iPSC clone` (+ `reprogramming vector`);
+   `S. cerevisiae ancestor strain (RWY12/BY4741, tlc1-delta)` → `yeast strain` (+ `strain background`,
+   `telomere genotype`). **Drop parentheticals** that encode sample size / provenance / genotype
+   (`(811 single cells)`, `(all cell types)`, `(humanized line)`) — put that in the node's DEFINITION.
 
 3. **Variable = a grounded QUALITY + a reusable VALUE-SPECIFICATION.** (`add-variable`)
    - **Quality** (`ooevv-quality`, `ensure-quality`) = *what* is measured — the semantic anchor. Ground
@@ -160,6 +167,23 @@ A KEfED model (`kefed-model`, authored under a bundle with `add-experiment`) is 
    `treatment`) on the transduction / recipient; the **measurement** on the readout assay. Traversing flow
    edges (`link-nodes --role input|output`) upstream from a measurement collects its indexing
    parameters — the **data signature** (`show-data-signature`). Rich chains ⇒ rich, correct signatures.
+   **A `measurement` lives on the PROCESS that measures it** (an `assay`, or the `data-transformation`
+   that computes the reported value) — **never on a bare trailing data-product entity**. If you find a
+   trailing "result/profile/matrix/readout" *entity* that carries the measurements, it is an **analysis
+   process mislabeled as an entity**: retype it to `data-transformation` (keep its indexing parameters,
+   e.g. `cell type identity`, on it), or move the measurements onto the upstream assay and drop the empty
+   entity. Measurements on a process keep them co-indexed by that process's parameters.
+
+5. **Model the HIDDEN process that generated or sorted a specialization.** When an entity's distinguishing
+   property is the *result of a procedure*, add that procedure as an explicit node and attach the property
+   as **its** parameter — do not bury it in a name:
+   - a genotype from a knockout / allele edit → a `material-processing` node (`genetic modification`,
+     `TLC1 humanization`) that **outputs** the strain, carrying the genotype parameter;
+   - a cell-type from clustering / annotation → a `data-transformation` (`cell-type clustering`) carrying
+     `cell type identity` (this is "the process that sorted them");
+   - a derived cell state (iPSC, reprogramming intermediate) → the reprogramming process that produced it.
+   Add such a node when the paper's workflow genuinely implies it; for standard reagents (an inbred strain,
+   a catalog cell line) capture identity as a **constant** rather than inventing a procurement step.
 
 **Grounding policy (non-negotiable):** attach a curie **only** when a real ontology term's definition
 genuinely matches the intended meaning. If a term can't be grounded, or the candidate's definition is
