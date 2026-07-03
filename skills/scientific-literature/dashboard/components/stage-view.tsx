@@ -4,7 +4,34 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { T } from './tokens';
 import { Panel, Icon, MarkdownContent } from './atoms';
-import type { StageDetail, IngestPaper, BundleSummary, Corpus } from '@/lib/scientific-literature';
+import type { StageDetail, IngestPaper, BundleSummary, Corpus, SensemakingCheck } from '@/lib/scientific-literature';
+
+// Verifier findings panel (shared by discovery + ingestion stages).
+function ChecksPanel({ checks }: { checks?: SensemakingCheck[] }) {
+  if (!checks || !checks.length) return null;
+  const color = (s: string) => (s === 'pass' ? T.olive : s === 'warn' ? T.rust : '#e05555');
+  const glyph = (s: string) => (s === 'pass' ? '✓' : s === 'warn' ? '!' : '✗');
+  const p = checks.filter((c) => c.status === 'pass').length;
+  const w = checks.filter((c) => c.status === 'warn').length;
+  const f = checks.filter((c) => c.status === 'fail').length;
+  return (
+    <Panel title="Checks">
+      <div style={{ fontFamily: T.mono, fontSize: 11, color: T.fgDim, marginBottom: 4 }}>
+        <span style={{ color: T.olive }}>{p} pass</span> · <span style={{ color: T.rust }}>{w} warn</span> · <span style={{ color: '#e05555' }}>{f} fail</span>
+      </div>
+      {checks.map((c) => (
+        <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '18px 1fr auto', gap: 8, alignItems: 'baseline' }}>
+          <span style={{ color: color(c.status), fontFamily: T.mono, fontWeight: 700 }}>{glyph(c.status)}</span>
+          <div>
+            <span style={{ fontSize: 13, color: T.fg }}>{c.name}</span>
+            <div style={{ fontSize: 12, color: T.fgDim }}>{c.detail}</div>
+          </div>
+          {c.offenders.length > 0 && <span style={{ fontFamily: T.mono, fontSize: 10.5, color: color(c.status) }}>{c.offenders.length}</span>}
+        </div>
+      ))}
+    </Panel>
+  );
+}
 
 const rowS: React.CSSProperties = { display: 'grid', gap: 12, alignItems: 'center', padding: '9px 14px', borderTop: `1px solid ${T.borderDim}`, textDecoration: 'none', color: 'inherit' };
 const faint: React.CSSProperties = { fontFamily: T.mono, fontSize: 10.5, color: T.fgFaint };
@@ -68,27 +95,45 @@ function CopyFilenameButton({ paper }: { paper: IngestPaper }) {
   );
 }
 
+function PaperRow({ p }: { p: IngestPaper }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '46px 1fr auto auto auto', gap: 12, alignItems: 'center', padding: '8px 0', borderTop: `1px solid ${T.borderDim}` }}>
+      <span style={faint}>{p.year ?? '—'}</span>
+      <Link href={`/scientific-literature/paper/${p.id}`} style={{ fontSize: 13, color: T.fg, textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name || p.id}</Link>
+      <span style={{ fontFamily: T.mono, fontSize: 10, color: p.fulltextPresent ? T.olive : T.fgFaint, border: `1px solid ${p.fulltextPresent ? T.oliveDim : T.borderDim}`, borderRadius: 3, padding: '2px 6px' }}>
+        {p.fulltextPresent ? 'full text' : (p.acquisition_status || 'no text')}
+      </span>
+      {p.doi
+        ? <a href={`https://doi.org/${p.doi}`} target="_blank" rel="noreferrer" title="Open the DOI to download the PDF manually" style={{ fontFamily: T.mono, fontSize: 10, color: T.teal, whiteSpace: 'nowrap' }}>doi.org/{p.doi} ↗</a>
+        : <span style={faint}>no doi</span>}
+      <CopyFilenameButton paper={p} />
+    </div>
+  );
+}
+
 function IngestionStage({ stage }: { stage: StageDetail }) {
   const papers = stage.papers || [];
+  const corpora = stage.corpora || [];
+  const byCorpus = new Map<string, IngestPaper[]>();
+  for (const p of papers) {
+    const k = p.corpus || 'ungrouped';
+    if (!byCorpus.has(k)) byCorpus.set(k, []);
+    byCorpus.get(k)!.push(p);
+  }
   return (
     <>
-      <CorporaPanel corpora={stage.corpora || []} />
-      <Panel title={`Papers (${papers.length})`}>
-        {papers.length === 0 && <span style={faint}>No papers ingested.</span>}
-        {papers.map((p) => (
-          <div key={p.id} style={{ ...rowS, gridTemplateColumns: '52px 1fr auto auto auto' }}>
-            <span style={faint}>{p.year ?? '—'}</span>
-            <Link href={`/scientific-literature/paper/${p.id}`} style={{ fontSize: 13, color: T.fg, textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name || p.id}</Link>
-            <span style={{ fontFamily: T.mono, fontSize: 10, color: p.fulltextPresent ? T.olive : T.fgFaint, border: `1px solid ${p.fulltextPresent ? T.oliveDim : T.borderDim}`, borderRadius: 3, padding: '2px 6px' }}>
-              {p.fulltextPresent ? 'full text' : (p.acquisition_status || 'no text')}
-            </span>
-            {p.doi
-              ? <a href={`https://doi.org/${p.doi}`} target="_blank" rel="noreferrer" style={{ fontFamily: T.mono, fontSize: 10, color: T.teal }}>doi ↗</a>
-              : <span style={faint}>—</span>}
-            <CopyFilenameButton paper={p} />
-          </div>
-        ))}
-      </Panel>
+      <ChecksPanel checks={stage.checks} />
+      {corpora.length === 0 && <Panel title="Corpora"><span style={faint}>No corpora in scope.</span></Panel>}
+      {corpora.map((c) => {
+        const ps = byCorpus.get(c.id) || [];
+        return (
+          <Panel key={c.id} title={`${c.name || c.id} · ${ps.length} papers`}>
+            {c.description && <div style={{ fontSize: 12.5, color: T.fgDim, marginBottom: 4 }}>{c.description}</div>}
+            {ps.length === 0 && <span style={faint}>No papers.</span>}
+            {ps.map((p) => <PaperRow key={p.id} p={p} />)}
+          </Panel>
+        );
+      })}
     </>
   );
 }
@@ -173,7 +218,7 @@ function ReportStage({ stage }: { stage: StageDetail }) {
 export function StageView({ stage }: { stage: StageDetail }) {
   switch (stage.kind) {
     case 'discovery':
-      return (<><CorporaPanel corpora={stage.corpora || []} /><StageNote content={stage.content} /></>);
+      return (<><ChecksPanel checks={stage.checks} /><StageNote content={stage.content} /><CorporaPanel corpora={stage.corpora || []} /></>);
     case 'ingest':
       return <IngestionStage stage={stage} />;
     case 'sensemaking':

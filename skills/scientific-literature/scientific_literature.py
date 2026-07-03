@@ -3160,6 +3160,11 @@ def cmd_show_stage(args):
                             papers.append(pp)
                     papers.sort(key=lambda p: p.get("year") or 0, reverse=True)
                     stage["papers"] = papers
+                # verifier findings relevant to this stage (discovery-description / ingestion checks)
+                if inv_id:
+                    _lc = _lint_ctx_investigation(tx, inv_id)
+                    _cat = "discovery" if kind == "discovery" else "ingest"
+                    stage["checks"] = [c for c in (fn(_lc) for fn in INVESTIGATION_CHECKS) if c["category"] == _cat]
             elif kind == "sensemaking":
                 stage["bundles"] = _load_bundles(tx, pid)
             elif kind == "analysis":
@@ -3405,6 +3410,108 @@ def cmd_lint_sensemaking(args):
     }
     print(json.dumps({"success": True, "hasCuration": True, "paper": pid, "bundle_id": bundle_id,
                       "checks": checks, "summary": summary}, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Investigation linter — verify the process stages (discovery describes how the
+# corpora were built; ingestion lists corpora + papers with full-text / DOI checks).
+# INVESTIGATION_CHECKS is the extension point. Findings share the _finding shape.
+# ---------------------------------------------------------------------------
+
+def _lint_ctx_investigation(tx, inv_id):
+    """Load the discovery description + corpora (with papers, each flagged for full text + DOI)."""
+    esc = escape_string(inv_id)
+    disc = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{esc}"; '
+        f'(investigation: $inv, iteration: $it) isa scilit-investigation-iteration; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; $ph has scilit-phase "discovery"; '
+        f'fetch {{ "id": $ph.id, "content": $ph.content }};').resolve())
+    discovery = ({k: v for k, v in disc[0].items() if v is not None} if disc else None)
+    crows = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{esc}"; '
+        f'(investigation: $inv, corpus: $c) isa scilit-investigation-scope; '
+        f'fetch {{ "id": $c.id, "name": $c.name }};').resolve())
+    corpora = []
+    for cr in crows:
+        c = {k: v for k, v in cr.items() if v is not None}
+        prows = list(tx.query(
+            f'match $c isa scilit-corpus, has id "{escape_string(c["id"])}"; '
+            f'(collection: $c, member: $p) isa alh-collection-membership; $p isa scilit-paper; '
+            f'fetch {{ "id": $p.id, "doi": $p.scilit-doi }};').resolve())
+        papers = []
+        for pr in prows:
+            p = {k: v for k, v in pr.items() if v is not None}
+            ft = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(p["id"])}"; $a isa scilit-pdf-fulltext; '
+                f'(alh-artifact: $a, referent: $p) isa alh-representation; fetch {{ "id": $a.id }};').resolve())
+            p["fulltext"] = bool(ft)
+            papers.append(p)
+        c["papers"] = papers
+        corpora.append(c)
+    return {"investigation": inv_id, "discovery": discovery, "corpora": corpora}
+
+
+def _chk_discovery_described(ctx):
+    d = ctx.get("discovery")
+    ok = bool(d and (d.get("content") or "").strip())
+    return _finding("discovery-described", "Discovery describes how the corpora were built", "discovery", "high",
+                    [] if ok else [ctx["investigation"]],
+                    "the discovery stage has a description",
+                    "the discovery stage has no description of how the corpora were built")
+
+
+def _chk_ingestion_corpora(ctx):
+    return _finding("ingestion-corpora", "Ingestion lists at least one corpus", "ingest", "high",
+                    [] if ctx["corpora"] else [ctx["investigation"]],
+                    f"{len(ctx['corpora'])} corpus/corpora in scope",
+                    "the investigation has no corpus in scope")
+
+
+def _chk_corpora_have_papers(ctx):
+    offenders = [c["id"] for c in ctx["corpora"] if not c["papers"]]
+    return _finding("corpora-have-papers", "Every corpus lists its papers", "ingest", "medium",
+                    offenders, "every corpus lists papers", "{n} corpus/corpora have no papers")
+
+
+def _chk_papers_have_doi(ctx):
+    offenders = [p["id"] for c in ctx["corpora"] for p in c["papers"] if not p.get("doi")]
+    return _finding("papers-have-doi", "Papers carry a DOI (for manual download)", "ingest", "medium",
+                    offenders, "every paper has a DOI url", "{n} paper(s) have no DOI", warn=True)
+
+
+def _chk_papers_fulltext(ctx):
+    all_papers = [p for c in ctx["corpora"] for p in c["papers"]]
+    offenders = [p["id"] for p in all_papers if not p.get("fulltext")]
+    total = len(all_papers)
+    return _finding("papers-fulltext", "Full text is available for papers", "ingest", "low",
+                    offenders, f"full text held for all {total} paper(s)",
+                    f"{{n}} of {total} paper(s) have no full text", warn=True)
+
+
+INVESTIGATION_CHECKS = [
+    _chk_discovery_described, _chk_ingestion_corpora, _chk_corpora_have_papers,
+    _chk_papers_have_doi, _chk_papers_fulltext,
+]
+
+
+def cmd_lint_investigation(args):
+    """Linter over an investigation's process stages: discovery must describe how the corpora
+    were built; ingestion must list corpora + papers with full-text and DOI checks."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            head = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'fetch {{ "id": $inv.id }};').resolve())
+            if not head:
+                print(json.dumps({"success": False, "error": "Investigation not found"})); sys.exit(1)
+            ctx = _lint_ctx_investigation(tx, args.id)
+    checks = [fn(ctx) for fn in INVESTIGATION_CHECKS]
+    summary = {
+        "passed": sum(1 for c in checks if c["status"] == "pass"),
+        "warned": sum(1 for c in checks if c["status"] == "warn"),
+        "failed": sum(1 for c in checks if c["status"] == "fail"),
+    }
+    print(json.dumps({"success": True, "investigation": args.id, "checks": checks, "summary": summary}, indent=2))
 
 
 def _render_investigation_md(inv):
@@ -5462,6 +5569,11 @@ def main():
         help="Run curation checks over a paper's sensemaking bundle (pass/warn/fail)")
     p.add_argument("--id", required=True, help="Paper id (scilit-paper-...)")
 
+    # lint-investigation (verifier: discovery description + ingestion corpora/papers/full-text)
+    p = subparsers.add_parser("lint-investigation",
+        help="Run process checks over an investigation (discovery + ingestion)")
+    p.add_argument("--id", required=True, help="Investigation id (scinv-...)")
+
     # show-bundle
     p = subparsers.add_parser("show-bundle", help="Show one per-paper sensemaking bundle in full")
     p.add_argument("--id", required=True, help="Bundle id (scsense-...)")
@@ -5606,6 +5718,7 @@ def main():
         "show-stage": cmd_show_stage,
         "show-paper-curation": cmd_show_paper_curation,
         "lint-sensemaking": cmd_lint_sensemaking,
+        "lint-investigation": cmd_lint_investigation,
         "show-bundle": cmd_show_bundle,
         "show-experiment": cmd_show_experiment,
         "show-template": cmd_show_template,

@@ -505,6 +505,7 @@ export interface StageDetail {
   pipeline_notes?: Array<{ id: string; name?: string }>; // analysis
   synthesized_claims?: SynthesizedClaimNode[]; // report
   citation_impacts?: ImpactNode[];             // report
+  checks?: SensemakingCheck[];                 // verifier findings (discovery / ingest)
 }
 
 export async function getStage(phaseId: string, db?: string): Promise<StageDetail> {
