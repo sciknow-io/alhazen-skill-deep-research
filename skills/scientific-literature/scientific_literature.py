@@ -4748,6 +4748,177 @@ def cmd_bind_parameter(args):
 
 
 # =============================================================================
+# KEfED model-EDIT verbs — correct an existing model in place (rename / retype /
+# move a variable / delete a node / set a node's definition). The node id, its
+# variables, and its flow edges survive a retype (only the kefed-node-type link
+# is rewired). Use these to enforce the authoring rules in SKILL.md on models
+# already curated (generic entity names, measurement-on-process, hidden
+# generating/sorting processes).
+# =============================================================================
+
+_NODE_TYPES = {"material-entity": "ooevv-material-entity", "assay": "ooevv-assay",
+               "material-processing": "ooevv-material-processing",
+               "data-transformation": "ooevv-data-transformation"}
+
+
+def _node_def(tx, node_id):
+    """Return (def_id, concrete_ooevv_type_label) of the OOEVV definition typing a node."""
+    rows = list(tx.query(
+        f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+        f'(node: $n, node-type: $d) isa kefed-node-type; $d isa $dt; '
+        f'fetch {{ "id": $d.id, "dt": $dt }};').resolve())
+    if not rows:
+        return None, None
+    did = rows[0]["id"]
+    labels = {(r["dt"] if isinstance(r["dt"], str) else r["dt"].get("label")) for r in rows}
+    for t in ("ooevv-assay", "ooevv-material-processing", "ooevv-data-transformation", "ooevv-material-entity"):
+        if t in labels:
+            return did, t
+    return did, None
+
+
+def _node_def_use_count(tx, def_id):
+    return len(list(tx.query(
+        f'match $d isa ooevv-element, has id "{escape_string(def_id)}"; '
+        f'(node: $n, node-type: $d) isa kefed-node-type; fetch {{ "id": $n.id }};').resolve()))
+
+
+def cmd_rename_node(args):
+    """Rename a kefed-model-node's display name AND its OOEVV definition's name (the def name is
+    only changed when that def is used by this one node, so shared/reused defs are never disturbed)."""
+    node_id = args.node
+    new = escape_string(args.name)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            exists = list(tx.query(f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                                   f'fetch {{ "id": $n.id }};').resolve())
+            if not exists:
+                print(json.dumps({"success": False, "error": "Node not found"})); sys.exit(1)
+            did, _ = _node_def(tx, node_id)
+            tx.query(f'match $n isa kefed-model-node, has id "{escape_string(node_id)}", has name $o; '
+                     f'delete has $o of $n; insert $n has name "{new}";').resolve()
+            def_renamed = False
+            if did and _node_def_use_count(tx, did) == 1:
+                tx.query(f'match $d isa ooevv-element, has id "{escape_string(did)}", has name $o; '
+                         f'delete has $o of $d; insert $d has name "{new}";').resolve()
+                def_renamed = True
+            tx.commit()
+    print(json.dumps({"success": True, "node": node_id, "name": args.name,
+                      "def": did, "def_renamed": def_renamed}))
+
+
+def cmd_retype_node(args):
+    """Change a node's OOEVV type by rewiring its kefed-node-type link to a def of the requested type
+    (find-or-create by name within the model's element-set). The node id, its variables and its flow
+    edges are preserved. Optionally rename the node with --name. Use e.g. to retype a trailing
+    'result/profile' material-entity that carries measurements into the data-transformation that
+    produced them."""
+    node_id = args.node
+    if args.type not in _NODE_TYPES:
+        print(json.dumps({"success": False, "error": f"--type must be one of {list(_NODE_TYPES)}"})); sys.exit(1)
+    tgt = _NODE_TYPES[args.type]
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            m = list(tx.query(f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                              f'(model: $mo, element: $n) isa kefed-model-element; $n has name $nn; '
+                              f'fetch {{ "model": $mo.id, "name": $nn }};').resolve())
+            if not m:
+                print(json.dumps({"success": False, "error": "Node not found or not in a model"})); sys.exit(1)
+            model_id = m[0]["model"]
+            name = args.name or m[0]["name"]
+            eset_id = _model_elementset(tx, model_id, name)
+            ex = list(tx.query(
+                f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                f'(element-set: $es, element: $d) isa ooevv-set-element; '
+                f'$d isa {tgt}, has name "{escape_string(name)}"; fetch {{ "id": $d.id }};').resolve())
+            if ex:
+                new_def = ex[0]["id"]
+            else:
+                new_def = generate_id("ooevv")
+                tx.query(f'match $es isa ooevv-element-set, has id "{eset_id}"; '
+                         f'insert $d isa {tgt}, has id "{new_def}", has name "{escape_string(name)}"; '
+                         f'(element-set: $es, element: $d) isa ooevv-set-element;').resolve()
+            tx.query(f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                     f'$r isa kefed-node-type, links (node: $n, node-type: $od); delete $r;').resolve()
+            tx.query(f'match $n isa kefed-model-node, has id "{escape_string(node_id)}"; '
+                     f'$d isa {tgt}, has id "{new_def}"; '
+                     f'insert (node: $n, node-type: $d) isa kefed-node-type;').resolve()
+            if args.name:
+                tx.query(f'match $n isa kefed-model-node, has id "{escape_string(node_id)}", has name $o; '
+                         f'delete has $o of $n; insert $n has name "{escape_string(args.name)}";').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "node": node_id, "type": args.type,
+                      "new_def": new_def, "renamed": bool(args.name)}))
+
+
+def cmd_move_variable(args):
+    """Reassign a variable (measurement / parameter / constant) from its current node to another node
+    via kefed-node-variable. Used to canonicalize a measurement onto the measuring process, or to move
+    a specialization parameter onto the hidden process that sets it."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            ok = list(tx.query(
+                f'match $v isa ooevv-variable, has id "{escape_string(args.variable)}"; '
+                f'$n isa kefed-model-node, has id "{escape_string(args.to_node)}"; '
+                f'fetch {{ "v": $v.id }};').resolve())
+            if not ok:
+                print(json.dumps({"success": False, "error": "Variable or target node not found"})); sys.exit(1)
+            tx.query(f'match $v isa ooevv-variable, has id "{escape_string(args.variable)}"; '
+                     f'$r isa kefed-node-variable, links (node: $on, variable: $v); delete $r;').resolve()
+            tx.query(f'match $v isa ooevv-variable, has id "{escape_string(args.variable)}"; '
+                     f'$n isa kefed-model-node, has id "{escape_string(args.to_node)}"; '
+                     f'insert (node: $n, variable: $v) isa kefed-node-variable;').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "variable": args.variable, "to_node": args.to_node}))
+
+
+def cmd_delete_node(args):
+    """Delete a kefed-model-node after detaching every relation it plays (type, model membership,
+    flow edges, subject, parameter-target). REFUSES if the node still carries variables unless --force
+    (which detaches them, leaving the variables orphaned). Move variables off first with move-variable."""
+    node_id = args.node
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            e = escape_string(node_id)
+            exists = list(tx.query(f'match $n isa kefed-model-node, has id "{e}"; fetch {{ "id": $n.id }};').resolve())
+            if not exists:
+                print(json.dumps({"success": False, "error": "Node not found"})); sys.exit(1)
+            vs = list(tx.query(f'match $n isa kefed-model-node, has id "{e}"; '
+                               f'(node: $n, variable: $v) isa kefed-node-variable; fetch {{ "id": $v.id }};').resolve())
+            if vs and not getattr(args, "force", False):
+                print(json.dumps({"success": False, "error": "Node still carries variables; move them "
+                                  "off with move-variable first, or pass --force to detach (orphaning) them",
+                                  "variables": [v["id"] for v in vs]})); sys.exit(1)
+            for rel in ("kefed-node-type", "kefed-model-element", "kefed-node-variable",
+                        "ooevv-subject", "ooevv-process-input", "ooevv-process-output",
+                        "ooevv-parameter-target"):
+                tx.query(f'match $n isa kefed-model-node, has id "{e}"; '
+                         f'$r isa {rel}; $r links ($n); delete $r;').resolve()
+            tx.query(f'match $n isa kefed-model-node, has id "{e}"; delete $n;').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "deleted": node_id, "orphaned_variables": [v["id"] for v in vs]}))
+
+
+def cmd_set_node_definition(args):
+    """Set/replace the plain-English ooevv-definition on the OOEVV definition typing a node."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            did, _ = _node_def(tx, args.node)
+            if not did:
+                print(json.dumps({"success": False, "error": "Node or its definition not found"})); sys.exit(1)
+            de = escape_string(did)
+            has = list(tx.query(f'match $x isa ooevv-element, has id "{de}", has ooevv-definition $o; '
+                                f'fetch {{ "o": $o }};').resolve())
+            if has:
+                tx.query(f'match $x isa ooevv-element, has id "{de}", has ooevv-definition $o; '
+                         f'delete has $o of $x;').resolve()
+            tx.query(f'match $x isa ooevv-element, has id "{de}"; '
+                     f'insert $x has ooevv-definition "{escape_string(args.definition)}";').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "node": args.node, "def": did}))
+
+
+# =============================================================================
 # KEfED template / instance / data verbs (curation by recognize-reuse-fill)
 # =============================================================================
 
@@ -5499,6 +5670,35 @@ def main():
     p.add_argument("--target-entity", dest="target_entity",
         help="kefed-model-node id the parameter targets (specificity via ooevv-parameter-target)")
 
+    # --- KEfED model-EDIT verbs (correct an existing model in place) ---
+    p = subparsers.add_parser("rename-node",
+        help="Rename a node (and its sole-use OOEVV def) — e.g. make an over-specific entity name generic")
+    p.add_argument("--node", required=True, help="kefed-model-node id (knode-...)")
+    p.add_argument("--name", required=True, help="New generic name")
+
+    p = subparsers.add_parser("retype-node",
+        help="Change a node's OOEVV type in place (variables + flow edges survive) — e.g. retype a "
+             "measurement-bearing 'result' entity into the data-transformation that produced it")
+    p.add_argument("--node", required=True, help="kefed-model-node id (knode-...)")
+    p.add_argument("--type", required=True, help="material-entity|assay|material-processing|data-transformation")
+    p.add_argument("--name", help="Optionally rename the node at the same time")
+
+    p = subparsers.add_parser("move-variable",
+        help="Move a variable (measurement/parameter/constant) to another node — e.g. canonicalize a "
+             "measurement onto the measuring process, or a specialization param onto its generating process")
+    p.add_argument("--variable", required=True, help="ooevv-variable id (scvar-...)")
+    p.add_argument("--to-node", dest="to_node", required=True, help="Destination kefed-model-node id")
+
+    p = subparsers.add_parser("delete-node",
+        help="Delete a node (detaches type/membership/flow edges). Refuses if it still carries variables unless --force")
+    p.add_argument("--node", required=True, help="kefed-model-node id (knode-...)")
+    p.add_argument("--force", action="store_true", help="Detach (orphan) any remaining variables and delete anyway")
+
+    p = subparsers.add_parser("set-node-definition",
+        help="Set/replace the plain-English definition on a node's OOEVV def")
+    p.add_argument("--node", required=True, help="kefed-model-node id (knode-...)")
+    p.add_argument("--definition", required=True, help="Curated plain-English definition")
+
     # --- KEfED template / instance / data (curation by recognize-reuse-fill) ---
     p = subparsers.add_parser("ensure-template", help="Find-or-create a reusable experiment-design template")
     p.add_argument("--name", required=True, help="Template name (e.g. 'qPCR expression profiling')")
@@ -5705,6 +5905,11 @@ def main():
         "link-nodes": cmd_link_nodes,
         "add-variable": cmd_add_variable,
         "bind-parameter": cmd_bind_parameter,
+        "rename-node": cmd_rename_node,
+        "retype-node": cmd_retype_node,
+        "move-variable": cmd_move_variable,
+        "delete-node": cmd_delete_node,
+        "set-node-definition": cmd_set_node_definition,
         "ensure-template": cmd_ensure_template,
         "list-templates": cmd_list_templates,
         "list-qualities": cmd_list_qualities,

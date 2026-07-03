@@ -193,6 +193,20 @@ wrong, **OMIT the grounding** — better ungrounded-with-a-precise-local-definit
 → `link-nodes --role input|output` → `ensure-quality [--curie]` → `ensure-value-spec --quality
 --scale-type` → `add-variable --value-spec` → `show-experiment` / `show-data-signature` to verify.
 
+**Correcting an existing model (edit verbs).** To bring an already-curated model up to the rules above
+without rebuilding it — the node id, its variables and its flow edges are preserved:
+- `rename-node --node <knode> --name "<generic>"` — make an over-specific entity name generic (renames
+  the node and its sole-use OOEVV def).
+- `retype-node --node <knode> --type <material-entity|assay|material-processing|data-transformation>
+  [--name "<n>"]` — fix a mislabeled node (e.g. a measurement-bearing "result/profile" *entity* → the
+  `data-transformation` that produced it).
+- `move-variable --variable <scvar> --to-node <knode>` — canonicalize a measurement onto its measuring
+  process, or move a specialization parameter onto the hidden process that sets it (rule 5).
+- `set-node-definition --node <knode> --definition "..."` — park stripped-out specifics in the definition.
+- `delete-node --node <knode>` — drop an emptied trailing entity (refuses while it still carries
+  variables; move them off first). Re-check `show-data-signature` after any edit — indices should only
+  get richer, never disappear.
+
 ## Sensemaking — label observations by their evidence source
 
 When adding a `scilit-observation`, give it a **source-locator label** (`add-observation
