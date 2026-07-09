@@ -53,6 +53,8 @@ except ImportError:
     print("Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.8.0'",
           file=sys.stderr)
 
+from paper_identity import paper_identity
+
 try:
     from skillful_alhazen.utils.skill_helpers import escape_string, generate_id, get_timestamp
 except ImportError:
@@ -221,11 +223,26 @@ def paper_exists(driver, doi=None, pmid=None):
 
 
 def insert_paper(driver, paper: dict) -> str:
-    """Insert a normalized paper dict into TypeDB. Returns paper_id."""
-    pid = paper.get("id") or generate_id("scilit-paper")
+    """Insert a normalized paper dict into TypeDB. Returns paper_id.
+
+    Id is always the deterministic paper_identity() hash (DOI -> PMID -> arXiv ->
+    content-hash) -- never a caller-supplied or randomly generated value. This is
+    the single source of truth for scilit-paper identity (see SKILL.md); a paper
+    already present under this id (created via this function, insert_epmc_paper,
+    or kqed.upsert_paper) is returned as-is rather than duplicated."""
+    identity_meta = dict(paper)
+    identity_meta.setdefault("arxiv", paper.get("arxiv_id"))
+    pid, tier, value = paper_identity(identity_meta)
     timestamp = get_timestamp()
 
-    q = f'insert $p isa scilit-paper, has id "{pid}", has name "{escape_string(paper.get("title", ""))}"'
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+        if list(tx.query(f'match $x has id "{escape_string(pid)}"; fetch {{ "id": $x.id }};').resolve()):
+            return pid
+
+    q = (f'insert $p isa scilit-paper, has id "{pid}", '
+         f'has scilit-identity-basis "{escape_string(tier)}", '
+         f'has scilit-identity-value "{escape_string(value)}", '
+         f'has name "{escape_string(paper.get("title", ""))}"')
     if paper.get("abstract"):
         q += f', has abstract-text "{escape_string(paper["abstract"])}"'
     if paper.get("doi"):
@@ -260,12 +277,15 @@ def insert_paper(driver, paper: dict) -> str:
 
 
 def add_to_collection(driver, paper_id: str, collection_id: str):
-    """Add a paper to a collection (idempotent — skips if already a member)."""
+    """Add a paper to a collection (idempotent — skips if already a member).
+
+    Matches by alh-domain-thing, not scilit-paper: a scilit-preprint is a sibling
+    type, not a subtype, so scoping to scilit-paper would silently fail to find it."""
     timestamp = get_timestamp()
     with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
         existing = list(tx.query(
             f'match $c isa alh-collection, has id "{collection_id}"; '
-            f'$p isa scilit-paper, has id "{paper_id}"; '
+            f'$p isa alh-domain-thing, has id "{paper_id}"; '
             f'(collection: $c, member: $p) isa alh-collection-membership; '
             f'fetch {{ "id": $p.id }};'
         ).resolve())
@@ -273,7 +293,7 @@ def add_to_collection(driver, paper_id: str, collection_id: str):
             return
         tx.query(
             f'match $c isa alh-collection, has id "{collection_id}"; '
-            f'$p isa scilit-paper, has id "{paper_id}"; '
+            f'$p isa alh-domain-thing, has id "{paper_id}"; '
             f'insert (collection: $c, member: $p) isa alh-collection-membership, '
             f'has created-at {timestamp};'
         ).resolve()
@@ -409,12 +429,19 @@ def parse_epmc_record(record: dict):
 
 
 def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
-    """Insert an EPMC paper with full citation record and fragments. Returns paper_id."""
-    paper_id = f"doi-{paper['doi'].replace('/', '-').replace('.', '_')}"
+    """Insert an EPMC paper with full citation record and fragments. Returns paper_id.
+
+    Id is always the deterministic paper_identity() hash (see insert_paper) -- never
+    the legacy doi-<encoded-doi> scheme. The existence check matches by id alone
+    (type-agnostic), so it correctly recognizes an existing scilit-preprint too."""
+    paper_id, id_tier, id_value = paper_identity({"doi": paper.get("doi"), "pmid": paper.get("pmid")})
     timestamp = get_timestamp()
 
     # Build insert query
-    query = f'insert $p isa {paper["typedb_type"]}, has id "{paper_id}", has name "{escape_string(paper["title"])}", has scilit-doi "{paper["doi"]}", has created-at {timestamp}'
+    query = (f'insert $p isa {paper["typedb_type"]}, has id "{paper_id}", '
+             f'has scilit-identity-basis "{escape_string(id_tier)}", '
+             f'has scilit-identity-value "{escape_string(id_value)}", '
+             f'has name "{escape_string(paper["title"])}", has scilit-doi "{paper["doi"]}", has created-at {timestamp}')
 
     if paper.get("pmid"):
         query += f', has scilit-pmid "{paper["pmid"]}"'
@@ -436,9 +463,12 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
         query += f', has scilit-keyword "{escape_string(kw)}"'
     query += ";"
 
-    # Check if paper already exists
+    # Check if paper already exists -- match by the deterministic id alone (type-agnostic),
+    # so an existing scilit-preprint is correctly recognized too (it is a sibling type of
+    # scilit-paper, not a subtype, so a `has scilit-doi` match scoped to `isa scilit-paper`
+    # would silently miss it and risk a duplicate insert).
     with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-        check = f'match $p isa scilit-paper, has scilit-doi "{paper["doi"]}"; fetch {{ "id": $p.id }};'
+        check = f'match $p has id "{escape_string(paper_id)}"; fetch {{ "id": $p.id }};'
         if list(tx.query(check).resolve()):
             return paper_id
 
@@ -452,9 +482,11 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
         tx.query(f'insert $a isa scilit-citation-record, has id "{artifact_id}", has format "epmc-citation", has source-uri "{escape_string(paper["source_uri"])}", has created-at {timestamp};').resolve()
         tx.commit()
 
-    # Link artifact to paper
+    # Link artifact to paper (match by alh-domain-thing, not scilit-paper: a
+    # scilit-preprint is a sibling type, not a subtype, so scoping to scilit-paper
+    # would silently fail to find it)
     with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-        tx.query(f'match $p isa scilit-paper, has id "{paper_id}"; $a isa alh-artifact, has id "{artifact_id}"; insert (alh-artifact: $a, referent: $p) isa alh-representation;').resolve()
+        tx.query(f'match $p isa alh-domain-thing, has id "{paper_id}"; $a isa alh-artifact, has id "{artifact_id}"; insert (alh-artifact: $a, referent: $p) isa alh-representation;').resolve()
         tx.commit()
 
     # Create title fragment
@@ -478,10 +510,11 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
             tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; $f isa alh-fragment, has id "{abs_frag_id}"; insert (whole: $a, part: $f) isa alh-fragmentation;').resolve()
             tx.commit()
 
-    # Add to collection if specified
+    # Add to collection if specified (match by alh-domain-thing: see note above --
+    # a scilit-preprint would silently fail to match `isa scilit-paper`)
     if collection_id:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'match $c isa alh-collection, has id "{collection_id}"; $p isa scilit-paper, has id "{paper_id}"; insert (collection: $c, member: $p) isa alh-collection-membership, has created-at {timestamp};').resolve()
+            tx.query(f'match $c isa alh-collection, has id "{collection_id}"; $p isa alh-domain-thing, has id "{paper_id}"; insert (collection: $c, member: $p) isa alh-collection-membership, has created-at {timestamp};').resolve()
             tx.commit()
 
     # Tag with publication type
@@ -495,7 +528,7 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
                 tx.query(f'insert $t isa alh-tag, has id "{tag_id}", has name "{tag_name}";').resolve()
                 tx.commit()
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'match $p isa scilit-paper, has id "{paper_id}"; $t isa alh-tag, has name "{tag_name}"; insert (tagged-entity: $p, tag: $t) isa alh-tagging, has created-at {timestamp};').resolve()
+            tx.query(f'match $p isa alh-domain-thing, has id "{paper_id}"; $t isa alh-tag, has name "{tag_name}"; insert (tagged-entity: $p, tag: $t) isa alh-tagging, has created-at {timestamp};').resolve()
             tx.commit()
 
     return paper_id
