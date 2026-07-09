@@ -189,21 +189,13 @@ def cmd_show_paper_sensemaking(args):
 
 ### Task 4: Refit the deep-dive importer to paper-scoped sensemaking
 
-**Files:** Modify `prototypes/import_deepdive.py`.
+**OBSOLETE — `prototypes/import_deepdive.py` deleted in Plan 3a (chore: retire obsolete seeds).**
+Re-curation is now done end-to-end through the CLI verbs (`add-experiment`, `add-observation`,
+`add-reported-claim`, etc.) which use the element-set + KEfED model; no standalone importer needed.
 
-**Interfaces:** Consumes the Task-2 paper-scoped creators. Produces: per-paper observations/claims/mech-links
-that are **about the paper** (reusable), while the investigation linkage (claims/gaps that answer its question)
-moves to Phase 3.
-
-- [ ] **Step 1: Replace investigation-threaded creation of observations/claims/mech-links** in
-  `import_deepdive.py` with the paper-scoped helpers (`add_paper_observation`, `add_paper_claim`,
-  `add_paper_mech_link`). Keep gap creation and CFC hinge wiring (those are discourse/epistemic structure),
-  but the per-paper breakdown now attaches to the paper, not the investigation.
-
-- [ ] **Step 2: Dry-run on one deep-dive record** and confirm the created notes are about the paper
-  (`show-paper-sensemaking --id <focal-paper>` returns them) and NOT solely threaded under the investigation.
-
-- [ ] **Step 3: Commit** — `git commit -am "refactor(scilit): deep-dive importer creates paper-scoped sensemaking"`
+~~- [ ] **Step 1:** Replace investigation-threaded creation…~~
+~~- [ ] **Step 2:** Dry-run on one deep-dive record…~~
+~~- [ ] **Step 3:** Commit~~
 
 ---
 

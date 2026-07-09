@@ -26,29 +26,33 @@ const CWD = PROJECT_ROOT;
 
 // Prefer the warm gateway (no per-request Python cold-start); fall back to
 // spawning the CLI directly for host dev where no gateway is running.
-async function runScilit(args: string[]): Promise<unknown> {
-  if (gatewayConfigured()) return runSkill('scientific-literature', args);
+async function runScilit(args: string[], db?: string): Promise<unknown> {
+  // A `db` override is passed as a plain --database arg so it threads through BOTH the
+  // warm gateway and the direct-spawn path (the dashboard DB switcher).
+  const full = db ? ['--database', db, ...args] : args;
+  if (gatewayConfigured()) return runSkill('scientific-literature', full);
   const { stdout } = await execFileAsync(
     'uv',
-    ['run', 'python', SCILIT_SCRIPT, ...args],
+    ['run', 'python', SCILIT_SCRIPT, ...full],
     {
       cwd: CWD,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TYPEDB_DATABASE: process.env.TYPEDB_DATABASE || 'alh_deep_research_ng' },
+      env: { ...process.env, TYPEDB_DATABASE: db || process.env.TYPEDB_DATABASE || 'alh_deep_research' },
     }
   );
   return JSON.parse(stdout);
 }
 
-async function runNotebook(args: string[]): Promise<unknown> {
-  if (gatewayConfigured()) return runSkill('typedb-notebook', args);
+async function runNotebook(args: string[], db?: string): Promise<unknown> {
+  const full = db ? ['--database', db, ...args] : args;
+  if (gatewayConfigured()) return runSkill('typedb-notebook', full);
   const { stdout } = await execFileAsync(
     'uv',
-    ['run', 'python', NOTEBOOK_SCRIPT, ...args],
+    ['run', 'python', NOTEBOOK_SCRIPT, ...full],
     {
       cwd: CWD,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TYPEDB_DATABASE: process.env.TYPEDB_DATABASE || 'alh_deep_research_ng' },
+      env: { ...process.env, TYPEDB_DATABASE: db || process.env.TYPEDB_DATABASE || 'alh_deep_research' },
     }
   );
   return JSON.parse(stdout);
@@ -122,6 +126,7 @@ export interface FacetingNoteDetail {
   script?: string;
   config?: unknown;
   content?: string;
+  plot_code?: string;   // Observable Plot expression (also inside config)
 }
 
 export interface InvestigationCorpusRef {
@@ -146,6 +151,7 @@ export interface InvestigationSummary {
   corpus?: InvestigationCorpusRef | null;
   focal_paper?: InvestigationPaperRef | null;
   phase_count?: number;
+  iteration_count?: number;
 }
 
 export interface BundleSummary {
@@ -233,7 +239,14 @@ export interface ReportedGapNode { id: string; name?: string; goal?: string }
 // --- KEfED / OOEVV protocol graph ---
 // Curation standard: elements carry a plain-English definition + (for abbreviations) a long_form.
 export interface OoevvScale { id: string; type?: string; unit?: string; values?: string[] }
-export interface OoevvQualityRef { quality?: string; definition?: string; long_form?: string }
+export interface OoevvQualityRef {
+  quality?: string;
+  definition?: string;
+  long_form?: string;
+  quality_id?: string;
+  curie?: string;
+  grounding_state?: string;
+}
 export interface OoevvEntityRef { id: string; name?: string; definition?: string; long_form?: string }
 export interface OoevvVarBrief {
   id: string;
@@ -317,8 +330,15 @@ export async function listPapers(collectionId: string): Promise<{ papers: Paper[
   }>;
 }
 
-export async function getPaper(id: string): Promise<PaperDetail> {
-  return runScilit(['show', '--id', id]) as Promise<PaperDetail>;
+export async function getPaper(id: string, db?: string): Promise<PaperDetail> {
+  return runScilit(['show', '--id', id], db) as Promise<PaperDetail>;
+}
+
+// --- Database switcher ---------------------------------------------------------
+export interface DatabaseInfo { name: string; hasScilit: boolean; investigations: number; papers: number }
+export interface DatabaseList { success: boolean; databases: string[]; info?: DatabaseInfo[] }
+export async function listDatabases(): Promise<DatabaseList> {
+  return runScilit(['list-databases']) as Promise<DatabaseList>;
 }
 
 export async function getMap(opts?: { collectionIds?: string[]; all?: boolean; minClusterSize?: number }): Promise<MapData> {
@@ -334,12 +354,12 @@ export async function getMap(opts?: { collectionIds?: string[]; all?: boolean; m
 
 // --- Faceting-note endpoints (core typedb-notebook CLI) -----------------------
 
-export async function listFacetingNotes(): Promise<{ notes: FacetingNoteSummary[]; count: number }> {
-  return runNotebook(['list-pipeline-notes']) as Promise<{ notes: FacetingNoteSummary[]; count: number }>;
+export async function listFacetingNotes(db?: string): Promise<{ notes: FacetingNoteSummary[]; count: number }> {
+  return runNotebook(['list-pipeline-notes'], db) as Promise<{ notes: FacetingNoteSummary[]; count: number }>;
 }
 
-export async function getFacetingNote(id: string): Promise<FacetingNoteDetail> {
-  return runNotebook(['show-pipeline-note', '--id', id]) as Promise<FacetingNoteDetail>;
+export async function getFacetingNote(id: string, db?: string): Promise<FacetingNoteDetail> {
+  return runNotebook(['show-pipeline-note', '--id', id], db) as Promise<FacetingNoteDetail>;
 }
 
 export interface RunResult {
@@ -348,22 +368,24 @@ export interface RunResult {
   // keyed by output name -> { attr, chars }
   outputs_written: Record<string, { attr: string; chars: number }>;
   outputs_not_persisted: Record<string, unknown>;
+  plot_code?: string;      // Observable Plot expression to render against `data`
+  data?: unknown[];        // terminal output rows for the plot
 }
 
-export async function runFacetingNote(id: string): Promise<RunResult> {
-  return runNotebook(['run-pipeline-note', '--id', id]) as Promise<RunResult>;
+export async function runFacetingNote(id: string, db?: string): Promise<RunResult> {
+  return runNotebook(['run-pipeline-note', '--id', id], db) as Promise<RunResult>;
 }
 
 // --- Investigation endpoints (scilit CLI) -------------------------------------
 
-export async function listInvestigations(collectionId?: string): Promise<{ investigations: InvestigationSummary[]; count: number }> {
+export async function listInvestigations(collectionId?: string, db?: string): Promise<{ investigations: InvestigationSummary[]; count: number }> {
   const args = ['list-investigations'];
   if (collectionId) args.push('--collection', collectionId);
-  return runScilit(args) as Promise<{ investigations: InvestigationSummary[]; count: number }>;
+  return runScilit(args, db) as Promise<{ investigations: InvestigationSummary[]; count: number }>;
 }
 
-export async function getInvestigation(id: string): Promise<InvestigationDetail> {
-  return runScilit(['show-investigation', '--id', id]) as Promise<InvestigationDetail>;
+export async function getInvestigation(id: string, db?: string): Promise<InvestigationDetail> {
+  return runScilit(['show-investigation', '--id', id], db) as Promise<InvestigationDetail>;
 }
 
 export async function getBundle(id: string): Promise<BundleDetail> {
@@ -454,4 +476,86 @@ export async function getAcquisitionWorklist(citing?: string): Promise<Acquisiti
   const args = ['acquisition-worklist'];
   if (citing) args.push('--citing', citing);
   return runScilit(args) as Promise<AcquisitionWorklist>;
+}
+
+// --- Stage view (investigation-centric IA) ------------------------------------
+
+export interface IngestPaper {
+  id: string;
+  name?: string;
+  doi?: string;
+  year?: number;
+  acquisition_status?: string;
+  fulltextPresent?: boolean;
+  corpus?: string;
+  pdfFilename?: string;
+}
+
+// One investigation stage (scilit-investigation-phase), kind-dispatched payload.
+export interface StageDetail {
+  success: boolean;
+  id: string;
+  name?: string;
+  content?: string;
+  kind: string;                       // discovery | ingest | sensemaking | analysis | report
+  investigation?: { id: string; name?: string; iteration?: number } | null;
+  corpora?: Corpus[];                 // discovery + ingest
+  papers?: IngestPaper[];             // ingest
+  bundles?: BundleSummary[];          // sensemaking
+  pipeline_notes?: Array<{ id: string; name?: string }>; // analysis
+  synthesized_claims?: SynthesizedClaimNode[]; // report
+  citation_impacts?: ImpactNode[];             // report
+  checks?: SensemakingCheck[];                 // verifier findings (discovery / ingest)
+}
+
+export async function getStage(phaseId: string, db?: string): Promise<StageDetail> {
+  return runScilit(['show-stage', '--id', phaseId], db) as Promise<StageDetail>;
+}
+
+// --- Single-paper curation walkthrough payload --------------------------------
+
+export interface Fragment { id: string; content?: string; offset?: number; length?: number; kind?: string }
+export interface Derivation { note: string; frag: string; offset?: number; quote?: string }
+export interface CurationSpine { id: string; name?: string; iteration?: number; phase?: string }
+export interface SignatureIndexRef { id: string; name?: string; role?: string }
+export type DataSignature = Record<string, { name?: string; index?: SignatureIndexRef[] }>;
+
+export interface PaperCurationDetail {
+  success: boolean;
+  hasCuration: boolean;
+  paper: Paper & { acquisition_status?: string };
+  fulltext?: { id: string; 'cache-path'?: string; 'file-size'?: number; format?: string; 'source-uri'?: string } | null;
+  bundle_id?: string;
+  spine?: CurationSpine | null;
+  fragments?: Fragment[];
+  derivations?: Derivation[];
+  claim_observations?: Array<{ claim: string; observation: string }>;
+  bundle?: BundleDetail;
+  signatures?: Record<string, DataSignature>;   // keyed by kefed-model id
+}
+
+export async function getPaperCuration(paperId: string, db?: string): Promise<PaperCurationDetail> {
+  return runScilit(['show-paper-curation', '--id', paperId], db) as Promise<PaperCurationDetail>;
+}
+
+// --- Sensemaking linter (curation checks) -------------------------------------
+export interface SensemakingCheck {
+  id: string;
+  name: string;
+  category: string;      // rhetoric | kefed | ooevv | fulltext
+  severity: string;      // high | medium | low
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+  offenders: string[];
+}
+export interface SensemakingChecks {
+  success: boolean;
+  hasCuration: boolean;
+  paper: string;
+  bundle_id?: string;
+  checks: SensemakingCheck[];
+  summary: { passed: number; warned: number; failed: number };
+}
+export async function getSensemakingChecks(paperId: string, db?: string): Promise<SensemakingChecks> {
+  return runScilit(['lint-sensemaking', '--id', paperId], db) as Promise<SensemakingChecks>;
 }

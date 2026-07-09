@@ -576,6 +576,11 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py set-
 These operate on a `--type deep-dive` investigation. Claims, evidence, and impacts land naturally
 in the `analysis` phase; the writeup belongs in `report` (use `record-phase`).
 
+> **Full text is a hard precondition for KQED ingestion.** `create-bundle` refuses a paper that
+> has no full text (no `alh-representation` to a fulltext artifact). Run `fetch-pdf --id <paper>`
+> (or `fetch-pdf --id <paper> --file <pdf>` for a local copy) first — you cannot sense-make a paper
+> you haven't got.
+
 ```bash
 # 1. Add a claim (type: primary | secondary | peripheral)
 uv run python .claude/skills/scientific-literature/scientific_literature.py add-claim \
@@ -667,6 +672,13 @@ S2/S3 (KEfED, bio-mechanism):
   alh-sensemaking-note`), `about` a session/paper/person. Owns `scilit-experience-event` (the
   occasion, e.g. "CAIS 2026 keynote"). This is distinct from the KQED epistemic
   `scilit-observation` (a measurement-in-context, System 2 / KEfED D-node).
+
+> **Observation source-locator labels.** When adding a `scilit-observation`, name it with
+> a source-locator via `add-observation --source-label` (e.g. `OF4DF` = Figure 4 panels
+> D,F; `OSF3B` = Supplemental Figure 3B; `OT2` = Table 2; `OE5` = Experiment 5 with no
+> figure; `OX` = text-only). The label becomes the note `name`; the full text stays in
+> `content`. Full grammar (figures, supplemental figures, tables, experiments, multi-locus
+> `+`): [`docs/observation-source-labeling.md`](docs/observation-source-labeling.md).
 
 ---
 

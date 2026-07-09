@@ -116,5 +116,117 @@ Reconciliation prototypes that retrofit existing data to this layout live in
 
 ---
 
+## KEfED Model Authoring — build STRUCTURED, RICH, ACCURATE, EXPRESSIVE models
+
+A KEfED model (`kefed-model`, authored under a bundle with `add-experiment`) is a **graph of
+`kefed-model-node`s** that reconstructs an experiment. Follow these principles:
+
+1. **Reconstruct the real protocol from the paper's Methods.** Read the Experimental Procedures and
+   build the actual material chain — *organism → sample preparation → assay → readout* — including where
+   cells came from and how they were prepared (harvest, sort, lineage-deplete, transduce, transplant,
+   culture...). The **combination of nodes in the graph carries the experimental-design semantics**, not
+   any single node.
+
+2. **Minimal ontological commitment per node; maximum reuse.** Node *definitions* are **generic and
+   reusable** — `experimental mouse`, `bone-marrow harvest`, `competitive transplantation` — NOT
+   `HSC (WT or SIRT3-KO mouse)`. What differentiates *this* experiment lives in the attached **variables +
+   values**, never in node names. Share one OOEVV element wherever the concept genuinely recurs:
+   `add-entity-node` / `add-process` find-or-create a def by name **within the model's element-set**, so
+   pass `add-experiment --element-set <id>` to make a family of experiments **share one element-set** and
+   thus one def per concept (verify: distinct defs ≪ node count).
+   **A node name is the KIND of thing, never its specifics.** Strip every specific out of the name and
+   move it into a variable: `C57BL/6 male mouse` → `mouse` (+ `strain`, `sex`, `species`);
+   `aged mouse tail-tip fibroblasts` → `fibroblast` (+ `tissue source`, `donor age state`, `species`);
+   `MeV-derived iPSC clones` → `iPSC clone` (+ `reprogramming vector`);
+   `S. cerevisiae ancestor strain (RWY12/BY4741, tlc1-delta)` → `yeast strain` (+ `strain background`,
+   `telomere genotype`). **Drop parentheticals** that encode sample size / provenance / genotype
+   (`(811 single cells)`, `(all cell types)`, `(humanized line)`) — put that in the node's DEFINITION.
+
+3. **Variable = a grounded QUALITY + a reusable VALUE-SPECIFICATION.** (`add-variable`)
+   - **Quality** (`ooevv-quality`, `ensure-quality`) = *what* is measured — the semantic anchor. Ground
+     **only** with a verified, definition-matching curie (PATO/EFO); otherwise leave it **ungrounded**
+     (precise local definition, `grounding-state "ungrounded"`, no curie). **Never fabricate a grounding.**
+   - **Value-specification** (`ooevv-scale`, `ensure-value-spec --quality`) = *how* it is measured — the
+     value space + method: `ordinal` ranks, `nominal`/`binary` set, `numeric` unit/range. A quality
+     **enumerates its canonical value-specs** via `ooevv-quality-scale`. The **same quality** can be
+     measured by **different value-specs**.
+   - A variable **references a shared value-spec**: `add-variable --node <n> --role <r> --value-spec <id>`.
+     **Reuse is the default** — `recognize → reuse → extend`: run `list-qualities` / `list-value-specs`
+     before creating anything new.
+   - **Role is fixed by the value-spec's cardinality**, not chosen freely: a value-spec with **one**
+     possible value ⇒ `constant`; **two or more** ⇒ `parameter`. So `genotype {WT|SIRT3-KO}` is **always**
+     a parameter, `species {mouse}` is a constant. `measurement` (the readout) is the third role.
+     `add-variable` derives/auto-corrects parameter-vs-constant from the spec.
+   - **Worked example — age.** One quality `age` (PATO:0000011) with canonical value-specs
+     `{ordinal young<mature<old}` and `{numeric days, UO:0000033}`. A mouse-genetics paper's `age`
+     variable references the ordinal spec; a pharmacokinetics paper's references days. **Same quality,
+     different value-specs** — this is why the value-spec is a property of the quality, selected per variable.
+
+4. **Place variables at the biologically-correct node.** Organism-level (`species`, `genotype`, `age`) on
+   the mouse; cell-level (`cell-population`) on the sorted population; interventions (`construct`,
+   `treatment`) on the transduction / recipient; the **measurement** on the readout assay. Traversing flow
+   edges (`link-nodes --role input|output`) upstream from a measurement collects its indexing
+   parameters — the **data signature** (`show-data-signature`). Rich chains ⇒ rich, correct signatures.
+   **A `measurement` lives on the PROCESS that measures it** (an `assay`, or the `data-transformation`
+   that computes the reported value) — **never on a bare trailing data-product entity**. If you find a
+   trailing "result/profile/matrix/readout" *entity* that carries the measurements, it is an **analysis
+   process mislabeled as an entity**: retype it to `data-transformation` (keep its indexing parameters,
+   e.g. `cell type identity`, on it), or move the measurements onto the upstream assay and drop the empty
+   entity. Measurements on a process keep them co-indexed by that process's parameters.
+
+5. **Model the HIDDEN process that generated or sorted a specialization.** When an entity's distinguishing
+   property is the *result of a procedure*, add that procedure as an explicit node and attach the property
+   as **its** parameter — do not bury it in a name:
+   - a genotype from a knockout / allele edit → a `material-processing` node (`genetic modification`,
+     `TLC1 humanization`) that **outputs** the strain, carrying the genotype parameter;
+   - a cell-type from clustering / annotation → a `data-transformation` (`cell-type clustering`) carrying
+     `cell type identity` (this is "the process that sorted them");
+   - a derived cell state (iPSC, reprogramming intermediate) → the reprogramming process that produced it.
+   Add such a node when the paper's workflow genuinely implies it; for standard reagents (an inbred strain,
+   a catalog cell line) capture identity as a **constant** rather than inventing a procurement step.
+
+**Grounding policy (non-negotiable):** attach a curie **only** when a real ontology term's definition
+genuinely matches the intended meaning. If a term can't be grounded, or the candidate's definition is
+wrong, **OMIT the grounding** — better ungrounded-with-a-precise-local-definition than wrongly grounded.
+
+**Verb sequence:** `add-experiment [--element-set]` → `add-entity-node --subject` / `add-process --type`
+→ `link-nodes --role input|output` → `ensure-quality [--curie]` → `ensure-value-spec --quality
+--scale-type` → `add-variable --value-spec` → `show-experiment` / `show-data-signature` to verify.
+
+**Correcting an existing model (edit verbs).** To bring an already-curated model up to the rules above
+without rebuilding it — the node id, its variables and its flow edges are preserved:
+- `rename-node --node <knode> --name "<generic>"` — make an over-specific entity name generic (renames
+  the node and its sole-use OOEVV def).
+- `retype-node --node <knode> --type <material-entity|assay|material-processing|data-transformation>
+  [--name "<n>"]` — fix a mislabeled node (e.g. a measurement-bearing "result/profile" *entity* → the
+  `data-transformation` that produced it).
+- `move-variable --variable <scvar> --to-node <knode>` — canonicalize a measurement onto its measuring
+  process, or move a specialization parameter onto the hidden process that sets it (rule 5).
+- `set-node-definition --node <knode> --definition "..."` — park stripped-out specifics in the definition.
+- `delete-node --node <knode>` — drop an emptied trailing entity (refuses while it still carries
+  variables; move them off first). Re-check `show-data-signature` after any edit — indices should only
+  get richer, never disappear.
+
+## Sensemaking — label observations by their evidence source
+
+When adding a `scilit-observation`, give it a **source-locator label** (`add-observation
+--source-label`) so its evidence locus is legible at a glance. The label becomes the note
+`name`; the full statement always stays in `content`. The evidence is **not always a main
+figure** — cover all cases:
+
+- `OF4DF` — main **F**igure 4, panels D & F   ·   `OF2A-G` — Figure 2, panels A through G
+- `OSF3B` — **S**upplemental **F**igure 3, panel B
+- `OT2` / `OST1` — **T**able 2 / **S**upplemental **T**able 1
+- `OE5` — **E**xperiment 5 (a result reported only in text/Methods, no display item)
+- `OX` — text-only narrative assertion (no figure/table/experiment)
+- `OF2A+SF4C` — one observation read off **multiple** loci (join with `+`)
+
+Prefer the most specific display item (main-figure panel > supplemental > table); fall back
+to `E<n>` for figure-less experimental results and `X` for pure narrative. Legacy seed form
+`O4DF` (bare figure digit) is still accepted but write `OF4DF`. Full grammar:
+[`docs/observation-source-labeling.md`](docs/observation-source-labeling.md).
+
+---
+
 **Read USAGE.md before executing commands** -- full command reference, source-specific options,
 query syntax, semantic search workflow, and clustering guide.
