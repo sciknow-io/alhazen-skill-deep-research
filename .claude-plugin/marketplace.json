@@ -24,6 +24,11 @@
       "description": "Goal-driven technology investigation -- interview, discover, ingest, analyze, and visualize competing systems against success criteria"
     },
     {
+      "name": "dismech",
+      "source": "./skills/dismech",
+      "description": "DisMech disease-mechanism ingest -- bulk-load 750+ curated disorders from the Monarch Initiative into the standalone 'dismech' TypeDB database (the GLAV source for dismech-notebook)"
+    },
+    {
       "name": "dismech-notebook",
       "source": "./skills/dismech-notebook",
       "description": "DisMech rare-disease mechanism knowledge mapped into the Alhazen notebook (GLAV import from the dismech source database)"

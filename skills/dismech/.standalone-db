@@ -1,0 +1,3 @@
+# This skill's data lives in the 'dismech' TypeDB database, not alh_core.
+# Marker: excluded from core `make db-init`; DB provisioned by this skill's SessionStart hook.
+# The dismech-notebook skill (same repo) GLAV-maps this 'dismech' DB into 'alh_deep_research'.

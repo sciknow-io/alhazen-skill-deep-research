@@ -1,0 +1,5 @@
+name: dismech
+version: 0.1.1
+description: Browse and query the DisMech disease mechanism knowledge graph (750+ curated disorders in TypeDB 3.x)
+author: Gully Burns
+license: Apache-2.0

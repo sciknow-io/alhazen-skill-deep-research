@@ -1,0 +1,27 @@
+{
+  "name": "dismech",
+  "display_name": "Disease Mechanism Knowledge Graph",
+  "version": "0.1.0",
+  "description": "Browse and query the dismech knowledge base of disease pathophysiology. Covers 750+ curated disorders with mechanisms, phenotypes, and therapeutic targets. Requires TypeDB running and data ingested via dismech.py ingest.",
+  "author": {
+    "name": "SciKnow.io",
+    "url": "https://github.com/sciknow-io"
+  },
+  "repository": "https://github.com/sciknow-io/alhazen-skill-deep-research",
+  "license": "Apache-2.0",
+  "keywords": [
+    "dismech",
+    "disease",
+    "pathophysiology",
+    "typedb",
+    "knowledge-graph",
+    "biomed",
+    "rare-disease"
+  ],
+  "dependencies": [
+    {
+      "name": "alhazen-core",
+      "marketplace": "skillful-alhazen"
+    }
+  ]
+}

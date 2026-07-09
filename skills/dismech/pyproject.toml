@@ -1,0 +1,15 @@
+[project]
+name = "alhazen-skill-dismech"
+version = "0.1.1"
+description = "Disease mechanism knowledge graph skill for the Alhazen framework"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "typedb-driver>=3.8.0",
+    "pyyaml>=6.0.0",
+    "tqdm>=4.0.0",
+    "requests>=2.31.0",
+]
+
+[tool.uv]
+dev-dependencies = []
+

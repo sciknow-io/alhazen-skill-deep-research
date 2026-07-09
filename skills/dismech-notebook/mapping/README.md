@@ -1,6 +1,6 @@
 # DisMech -> Alhazen Notebook Mapping Rules
 
-GLAV mapping from the `dismech` TypeDB database to `dm-*` types in `alhazen_notebook`.
+GLAV mapping from the `dismech` TypeDB database to `dm-*` types in `alh_deep_research`.
 
 ## Rule Phases
 
@@ -35,10 +35,17 @@ GLAV mapping from the `dismech` TypeDB database to `dm-*` types in `alhazen_note
 
 ## Running
 
+The mapper `schema_mapper.py` is a **skillful-alhazen framework tool** (not part of this skill).
+Run it from a skillful-alhazen checkout, where this skill resolves under `local_skills/dismech-notebook/`:
+
 ```bash
 uv run python src/skillful_alhazen/utils/schema_mapper.py run \
   --source-db dismech \
-  --target-db alhazen_notebook \
-  --rules-dir plugins/dismech/skills/dismech-notebook/mapping/rules \
+  --target-db alh_deep_research \
+  --rules-dir local_skills/dismech-notebook/mapping/rules \
   --dry-run
 ```
+
+Drop `--dry-run` to write. `--rule <name>` runs a single phase; `--batch-size N` tunes write
+transactions. The `dismech` source DB is produced by the `dismech` skill (`dismech.py ingest`);
+the `dm-*` target schema must already be loaded in `alh_deep_research` (SessionStart hook).
