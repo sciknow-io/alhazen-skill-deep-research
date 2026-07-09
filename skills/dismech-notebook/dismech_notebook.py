@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-DisMech Notebook — Query CLI for dm-* entities in alhazen_notebook.
+DisMech Notebook — Query CLI for dm-* entities in alh_deep_research.
 
 Reads disease mechanisms mapped into the Alhazen notebook's ICE model
-via GLAV rules. All queries run against the alhazen_notebook database.
+via GLAV rules. All queries run against the alh_deep_research database.
 
 Usage:
     python dismech_notebook.py stats
