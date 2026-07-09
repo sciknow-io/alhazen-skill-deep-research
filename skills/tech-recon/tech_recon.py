@@ -2324,15 +2324,34 @@ def cmd_show_note(args):
 
 
 def cmd_add_analysis(args):
-    """Add an Observable Plot analysis to an investigation."""
+    """Add an analysis to an investigation.
+
+    Plot/table analyses carry Observable Plot code + a TypeQL query. A prose
+    analysis instead carries a Markdown body in the `content` attribute (via
+    --trec-content, which also accepts @path/to/file.md) and needs neither
+    plot code nor a query.
+    """
     inv_id = escape_string(args.investigation)
     ana_id = generate_id("tra")
     ts = get_timestamp()
     title = escape_string(args.title)
-    plot_code = escape_string(args.plot_code)
-    tql_query = escape_string(args.query)
-    analysis_type = escape_string(args.analysis_type)
-    description = escape_string(args.description) if args.description else ""
+    # argparse maps --trec-analysis-type -> args.trec_analysis_type (etc.)
+    analysis_type_raw = args.trec_analysis_type
+    analysis_type = escape_string(analysis_type_raw)
+
+    # Resolve the body stored in `content`: --trec-content (inline or @file)
+    # wins; otherwise fall back to --description for backward compatibility.
+    raw_content = getattr(args, "trec_content", None)
+    if raw_content and raw_content.startswith("@"):
+        with open(raw_content[1:]) as f:
+            raw_content = f.read()
+    if raw_content is None:
+        raw_content = args.description if args.description else ""
+    content = escape_string(raw_content)
+
+    plot_code = escape_string(args.trec_plot_code) if args.trec_plot_code else ""
+    tql_query = escape_string(args.query) if args.query else ""
+    fmt = "markdown" if analysis_type_raw == "prose" else "javascript"
 
     driver = get_driver()
     try:
@@ -2347,31 +2366,23 @@ def cmd_add_analysis(args):
             sys.exit(1)
 
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            # Insert analysis artifact
-            insert_q = f'''
-                insert $a isa trec-analysis,
-                    has id "{ana_id}",
-                    has name "{title}",
-                    has trec-title "{title}",
-                    has trec-analysis-type "{analysis_type}",
-                    has trec-plot-code "{plot_code}",
-                    has trec-tql-query "{tql_query}",
-                    has format "javascript",
-                    has created-at {ts};
-            '''
-            if description:
-                insert_q = f'''
-                    insert $a isa trec-analysis,
-                        has id "{ana_id}",
-                        has name "{title}",
-                        has trec-title "{title}",
-                        has trec-analysis-type "{analysis_type}",
-                        has trec-plot-code "{plot_code}",
-                        has trec-tql-query "{tql_query}",
-                        has format "javascript",
-                        has content "{description}",
-                        has created-at {ts};
-                '''
+            # Insert analysis artifact. Only attach plot-code / query / content
+            # attributes that are actually present (prose analyses omit the first two).
+            attrs = [
+                f'has id "{ana_id}"',
+                f'has name "{title}"',
+                f'has trec-title "{title}"',
+                f'has trec-analysis-type "{analysis_type}"',
+            ]
+            if plot_code:
+                attrs.append(f'has trec-plot-code "{plot_code}"')
+            if tql_query:
+                attrs.append(f'has trec-tql-query "{tql_query}"')
+            if content:
+                attrs.append(f'has content "{content}"')
+            attrs.append(f'has format "{fmt}"')
+            attrs.append(f'has created-at {ts}')
+            insert_q = "insert $a isa trec-analysis,\n    " + ",\n    ".join(attrs) + ";"
             tx.query(insert_q).resolve()
 
             # Link analysis to investigation
@@ -2390,7 +2401,7 @@ def cmd_add_analysis(args):
             "analysis": {
                 "id": ana_id,
                 "title": args.title,
-                "type": args.analysis_type,
+                "type": analysis_type_raw,
                 "investigation_id": args.investigation,
             },
         }))
@@ -2500,11 +2511,12 @@ def cmd_run_analysis(args):
     ana_id = escape_string(args.id)
     driver = get_driver()
     try:
-        # Step 1: Get the analysis plot code, stored query, and pre-computed content
+        # Step 1: Get the analysis type, plot code, stored query, and pre-computed content
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             results = list(tx.query(f'''
                 match $a isa trec-analysis, has id "{ana_id}";
                 fetch {{
+                    "type": $a.trec-analysis-type,
                     "plot_code": $a.trec-plot-code,
                     "query": $a.trec-tql-query,
                     "content": $a.content
@@ -2515,9 +2527,21 @@ def cmd_run_analysis(args):
             print(json.dumps({"success": False, "error": f"Analysis {args.id} not found"}))
             sys.exit(1)
 
+        analysis_type = results[0].get("type")
         plot_code = results[0].get("plot_code")
         tql_query = results[0].get("query")
         content = results[0].get("content")
+
+        # A prose analysis renders its stored Markdown body directly — return it
+        # verbatim as `content` so the dashboard can render it (no query/plot execution).
+        if analysis_type == "prose":
+            print(json.dumps({
+                "success": True,
+                "analysis_id": args.id,
+                "content": content or "",
+                "data": [],
+            }))
+            return
 
         # If no TypeQL query, fall back to pre-computed content stored in the content attribute
         if not tql_query:
@@ -3405,12 +3429,13 @@ def build_parser():
     p.set_defaults(func=cmd_show_note)
 
     # -- add-analysis --
-    p = subparsers.add_parser("add-analysis", help="Add an Observable Plot analysis to an investigation")
+    p = subparsers.add_parser("add-analysis", help="Add an analysis (plot/table with Observable Plot code + query, or prose with a Markdown body)")
     p.add_argument("--investigation", required=True, help="Investigation ID")
     p.add_argument("--title", required=True, help="Analysis title")
-    p.add_argument("--description", help="Analysis description (optional)")
-    p.add_argument("--trec-plot-code", required=True, help="Observable Plot JavaScript code")
-    p.add_argument("--query", required=True, help="TypeQL fetch query that produces the data")
+    p.add_argument("--description", help="Short subtitle (optional)")
+    p.add_argument("--trec-plot-code", help="Observable Plot JavaScript code (plot/table analyses)")
+    p.add_argument("--query", help="TypeQL fetch query that produces the data (plot/table analyses)")
+    p.add_argument("--trec-content", help="Markdown body for a prose analysis; accepts inline text or @path/to/file.md")
     p.add_argument(
         "--trec-analysis-type",
         default="plot",

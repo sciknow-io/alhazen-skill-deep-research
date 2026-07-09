@@ -201,9 +201,16 @@ export function AnalysisRunner({
   const [data, setData] = useState<unknown[] | null>(() =>
     typeNorm !== 'prose' && descriptionData ? descriptionData : null
   );
-  const [proseContent, setProseContent] = useState<string | null>(null);
+  // A prose analysis stores its Markdown body in `content`, surfaced here as
+  // `description`. Render it immediately on mount (no Run click needed); the
+  // Run button still refetches it from the /run endpoint.
+  const [proseContent, setProseContent] = useState<string | null>(
+    typeNorm === 'prose' ? (description ?? null) : null
+  );
   const [hasRun, setHasRun] = useState(() =>
-    typeNorm !== 'prose' && descriptionData !== null
+    typeNorm === 'prose'
+      ? Boolean(description)
+      : descriptionData !== null
   );
 
   const handleRun = async () => {
@@ -260,7 +267,7 @@ export function AnalysisRunner({
               border: `1px solid ${typeColor}66`,
             }}>{analysisType || 'plot'}</span>
           </div>
-          {description && !isDescriptionJson && (
+          {description && !isDescriptionJson && typeNorm !== 'prose' && (
             <p style={{ fontSize: 13, color: T.fgDim, maxWidth: 640, margin: 0, lineHeight: 1.5 }}>{description}</p>
           )}
         </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { type CSSProperties, type ReactNode } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -417,6 +417,62 @@ interface MarkdownContentProps {
   style?: CSSProperties;
 }
 
+// ─── MermaidBlock ──────────────────────────────────────────────
+// Renders a ```mermaid fenced code block as an SVG diagram. Mermaid is a
+// browser-only library, loaded lazily inside the effect so it never runs
+// during SSR. Colors are themed from the shared design tokens (T).
+function MermaidBlock({ chart }: { chart: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const reactId = useId();
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mermaid = (await import('mermaid')).default;
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'dark',
+          themeVariables: {
+            fontFamily: T.mono,
+            fontSize: '12px',
+            background: T.bgSunken,
+            primaryColor: T.bgRaised,
+            primaryTextColor: T.fg,
+            primaryBorderColor: T.teal,
+            lineColor: T.fgFaint,
+            secondaryColor: T.bgRaised,
+            tertiaryColor: T.bgSunken,
+            textColor: T.fg,
+          },
+        });
+        // Mermaid render ids must be valid CSS selectors; useId() emits colons.
+        const renderId = 'mmd-' + reactId.replace(/[^a-zA-Z0-9]/g, '');
+        const { svg } = await mermaid.render(renderId, chart);
+        if (!cancelled && ref.current) ref.current.innerHTML = svg;
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [chart, reactId]);
+
+  if (error) {
+    return (
+      <div style={{
+        background: 'rgba(200,80,80,0.1)', color: '#e05555',
+        padding: '12px 16px', borderRadius: 4, fontSize: 13,
+        fontFamily: T.mono, whiteSpace: 'pre-wrap', margin: '12px 0',
+      }}>
+        <strong>Mermaid render error:</strong> {error}
+      </div>
+    );
+  }
+  return <div ref={ref} style={{ margin: '12px 0', overflowX: 'auto', textAlign: 'center' }} />;
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const mdComponents: Record<string, React.ComponentType<any>> = {
   p: ({ children }: any) => (
@@ -453,19 +509,31 @@ const mdComponents: Record<string, React.ComponentType<any>> = {
     }
     return <code className={className} style={{ fontFamily: T.mono, fontSize: 12 }}>{children}</code>;
   },
-  pre: ({ children }: any) => (
-    <pre style={{
-      fontFamily: T.mono,
-      fontSize: 12,
-      background: T.bgSunken,
-      border: `1px solid ${T.borderDim}`,
-      borderRadius: 4,
-      padding: '12px 14px',
-      overflowX: 'auto',
-      margin: '8px 0 12px',
-      lineHeight: 1.5,
-    }}>{children}</pre>
-  ),
+  pre: ({ children }: any) => {
+    // A ```mermaid fenced block renders as a diagram instead of a code box.
+    // Intercept at `pre` (not `code`) so we can replace the whole <pre>,
+    // avoiding an invalid block-in-<pre> DOM nesting.
+    const child = Array.isArray(children) ? children[0] : children;
+    const className: string = child?.props?.className || '';
+    if (className.includes('language-mermaid')) {
+      const raw = child.props.children;
+      const chart = (Array.isArray(raw) ? raw.join('') : String(raw ?? '')).replace(/\n$/, '');
+      return <MermaidBlock chart={chart} />;
+    }
+    return (
+      <pre style={{
+        fontFamily: T.mono,
+        fontSize: 12,
+        background: T.bgSunken,
+        border: `1px solid ${T.borderDim}`,
+        borderRadius: 4,
+        padding: '12px 14px',
+        overflowX: 'auto',
+        margin: '8px 0 12px',
+        lineHeight: 1.5,
+      }}>{children}</pre>
+    );
+  },
   ul: ({ children }: any) => (
     <ul style={{ margin: '4px 0 10px', paddingLeft: 20, listStyleType: 'disc', color: T.fgDim }}>{children}</ul>
   ),

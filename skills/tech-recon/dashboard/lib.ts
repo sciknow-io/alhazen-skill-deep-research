@@ -146,7 +146,7 @@ export async function getAnalysis(id: string): Promise<{ analysis: TechReconAnal
   return runTechRecon(['show-analysis', '--id', id]) as any;
 }
 
-export async function runAnalysis(id: string): Promise<{ plot_code: string; data: unknown[] }> {
+export async function runAnalysis(id: string): Promise<{ plot_code?: string; data: unknown[]; content?: string }> {
   return runTechRecon(['run-analysis', '--id', id]) as any;
 }
 

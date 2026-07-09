@@ -168,7 +168,7 @@ export default function AnalysisPage({ params }: { params: Promise<{ id: string;
             )}
           </div>
 
-          {analysis.description && !analysis.description.trimStart().startsWith('[') && !analysis.description.trimStart().startsWith('{') && (
+          {analysis.type !== 'prose' && analysis.description && !analysis.description.trimStart().startsWith('[') && !analysis.description.trimStart().startsWith('{') && (
             <p style={{ fontSize: 13.5, lineHeight: 1.55, color: T.fgDim, maxWidth: 640, margin: 0 }}>
               {analysis.description}
             </p>
