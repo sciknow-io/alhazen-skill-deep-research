@@ -1,5 +1,5 @@
 name: disease
-description: Map dismech disease entities to dm-disease in alhazen_notebook
+description: Map dismech disease entities to dm-disease in alh_deep_research
 depends_on: []
 idempotent: true
 source_match: |
