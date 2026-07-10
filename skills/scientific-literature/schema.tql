@@ -153,7 +153,9 @@ entity scilit-preprint sub alh-domain-thing,
     owns abstract-text,
     owns publication-date,
     owns scilit-doi,
-    owns scilit-arxiv-id;
+    owns scilit-arxiv-id,
+    owns scilit-identity-basis,
+    owns scilit-identity-value;
 
 
 # SCILIT-REVIEW - A review article
