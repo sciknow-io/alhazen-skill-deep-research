@@ -35,6 +35,7 @@ import sys
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from time import sleep
@@ -81,6 +82,16 @@ try:
     KREUZBERG_AVAILABLE = True
 except ImportError:
     KREUZBERG_AVAILABLE = False
+
+try:
+    import fitz  # PyMuPDF
+    from pdf_layout_parser import (
+        load_blocks, compute_doc_stats, classify_blocks,
+        assemble_reading_order, render_markdown,
+    )
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Cache utilities (inlined — no external package needed)
@@ -1152,10 +1163,21 @@ def cmd_fetch_pdf(args):
     pdf_cache = save_to_cache(artifact_id, pdf_bytes, "application/pdf", subdir=subdir)
 
     # Extract full text with kreuzberg (layout/table-aware)  ->  fulltext/<paper-id>/<artifact-id>.txt
+    # Markdown output reflows line-wrapped/hyphenated PDF text into paragraphs at the
+    # source (structural, from kreuzberg's own layout model) rather than via a text-
+    # pattern post-process; content_filter drops cross-page repeated header/footer
+    # blocks by the same structural signal. Font-size-clustering heading detection
+    # (PdfConfig.hierarchy) was evaluated and rejected: on multi-column academic PDFs
+    # it fires on figure-caption font-size shifts as often as on real section breaks,
+    # so it made heading quality worse, not better.
     print(f"Extracting text ({len(pdf_bytes):,} bytes, {pdf_cache['full_path']}) ...",
           file=sys.stderr)
-    from kreuzberg import extract_file_sync
-    _res = extract_file_sync(pdf_cache["full_path"])
+    from kreuzberg import ContentFilterConfig, ExtractionConfig, OutputFormat, extract_file_sync
+    _extract_config = ExtractionConfig(
+        output_format=OutputFormat.MARKDOWN,
+        content_filter=ContentFilterConfig(strip_repeating_text=True),
+    )
+    _res = extract_file_sync(pdf_cache["full_path"], config=_extract_config)
     full_text = _res.content or ""
     try:
         page_count = int((getattr(_res, "metadata", None) or {}).get("page_count") or 0)
@@ -1187,7 +1209,7 @@ def cmd_fetch_pdf(args):
                 f'has mime-type "text/plain", '
                 f'has file-size {text_cache["file_size"]}, '
                 f'has content-hash "{text_cache["content_hash"]}", '
-                f'has format "pdf-extracted-text", '
+                f'has format "pdf-extracted-markdown", '
                 f'has created-at {timestamp};'
             ).resolve()
             tx.commit()
@@ -1221,6 +1243,117 @@ def cmd_fetch_pdf(args):
         "page_count": page_count,
         "char_count": len(full_text),
         "file_size_bytes": text_cache["file_size"],
+    }, indent=2))
+
+
+def cmd_parse_pdf_blocks(args):
+    """EXPERIMENTAL: layout-aware block-classification full-text extraction
+    (LA-PDFText-derived, PyMuPDF-based — see pdf_layout_parser.py). Reuses the
+    PDF already downloaded by `fetch-pdf` (never re-downloads) and stores its
+    output as an ADDITIONAL scilit-pdf-fulltext artifact alongside the
+    kreuzberg-based one — same entity type, distinct id/format — so both are
+    visible side by side via `show` while this extractor is under development.
+    Does not touch or replace the existing kreuzberg artifact.
+    """
+    if not PYMUPDF_AVAILABLE:
+        print(json.dumps({"success": False,
+                          "error": "pymupdf not installed. Run: uv add pymupdf"}))
+        sys.exit(1)
+    if not CACHE_AVAILABLE:
+        print(json.dumps({"success": False,
+                          "error": "skillful_alhazen.utils.cache not available"}))
+        sys.exit(1)
+
+    paper_id = args.id
+
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            results = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+                f'fetch {{ "name": $p.name }};'
+            ).resolve())
+        if not results:
+            print(json.dumps({"success": False, "error": f"Paper not found: {paper_id}"}))
+            sys.exit(1)
+        paper_name = results[0].get("name") or ""
+
+        # Reuse the PDF `fetch-pdf` already downloaded — this command never fetches.
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            existing = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+                f'$a isa scilit-pdf-fulltext; '
+                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+                f'fetch {{ "cache-path": $a.cache-path }};'
+            ).resolve())
+
+    pdf_cache_path = None
+    for art in existing:
+        cp = art.get("cache-path") or ""
+        candidate = cp[:-4] + ".pdf" if cp.endswith(".txt") else cp
+        if candidate.endswith(".pdf") and (_get_cache_dir() / candidate).exists():
+            pdf_cache_path = candidate
+            break
+    if not pdf_cache_path:
+        print(json.dumps({"success": False,
+                          "error": f"No cached PDF found for {paper_id}. Run fetch-pdf first."}))
+        sys.exit(1)
+    pdf_full_path = str(_get_cache_dir() / pdf_cache_path)
+
+    print(f"Parsing blocks ({pdf_full_path}) ...", file=sys.stderr)
+    doc = fitz.open(pdf_full_path)
+    n_pages = doc.page_count
+    doc.close()
+
+    blocks = load_blocks(pdf_full_path)
+    stats = compute_doc_stats(blocks, n_pages)
+    classify_blocks(blocks, stats, n_pages)
+    ordered = assemble_reading_order(blocks, stats)
+    full_text = render_markdown(ordered)
+
+    type_counts = dict(Counter(b.type for b in blocks))
+    print(f"Classified {len(blocks)} blocks: {type_counts}", file=sys.stderr)
+
+    artifact_id = f"scilit-fulltext-{paper_id.split('-')[-1]}-blocks"
+    subdir = f"fulltext/{paper_id}"
+    text_cache = save_to_cache(artifact_id, full_text, "text/plain", subdir=subdir)
+    timestamp = get_timestamp()
+    name_esc = escape_string(f"{paper_name} [full text - block classifier]")
+
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            # idempotent: drop any prior artifact at this id before re-inserting
+            tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; '
+                     f'$r isa alh-representation, links (alh-artifact: $a); delete $r;').resolve()
+            tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; delete $a;').resolve()
+            tx.query(
+                f'insert $a isa scilit-pdf-fulltext, '
+                f'has id "{artifact_id}", '
+                f'has name "{name_esc}", '
+                f'has source-uri "{escape_string(pdf_full_path)}", '
+                f'has cache-path "{escape_string(text_cache["cache_path"])}", '
+                f'has scilit-fulltext-kind "pdf", '
+                f'has mime-type "text/plain", '
+                f'has file-size {text_cache["file_size"]}, '
+                f'has content-hash "{text_cache["content_hash"]}", '
+                f'has format "pdf-block-classified-markdown", '
+                f'has created-at {timestamp};'
+            ).resolve()
+            tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+                f'$a isa scilit-pdf-fulltext, has id "{artifact_id}"; '
+                f'insert (alh-artifact: $a, referent: $p) isa alh-representation;'
+            ).resolve()
+            tx.commit()
+
+    print(json.dumps({
+        "success": True,
+        "paper_id": paper_id,
+        "artifact_id": artifact_id,
+        "text_cache_path": text_cache["cache_path"],
+        "block_type_counts": type_counts,
+        "char_count": len(full_text),
     }, indent=2))
 
 
@@ -5410,6 +5543,14 @@ def main():
     p.add_argument("--force", action="store_true",
         help="Re-download/re-ingest even if artifact already exists")
 
+    # parse-pdf-blocks (EXPERIMENTAL)
+    p = subparsers.add_parser("parse-pdf-blocks",
+        help="EXPERIMENTAL: layout-aware block-classification full-text extraction "
+             "(LA-PDFText-derived, PyMuPDF) — requires fetch-pdf to have run first; "
+             "stores an additional fulltext artifact alongside the kreuzberg one")
+    p.add_argument("--id", required=True,
+        help="scilit-paper TypeDB ID (e.g. scilit-paper-fd0a1617ef99)")
+
     # show
     p = subparsers.add_parser("show", help="Show a paper for sensemaking")
     p.add_argument("--id", required=True, help="Paper ID (scilit-paper-...)")
@@ -5899,6 +6040,7 @@ def main():
         "count": cmd_count,
         "ingest": cmd_ingest,
         "fetch-pdf": cmd_fetch_pdf,
+        "parse-pdf-blocks": cmd_parse_pdf_blocks,
         "show": cmd_show,
         "list": cmd_list,
         "list-collections": cmd_list_collections,
