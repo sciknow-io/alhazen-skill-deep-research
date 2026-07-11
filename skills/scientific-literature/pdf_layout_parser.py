@@ -31,13 +31,21 @@ SECTION_PATTERNS = [
     ("conflict_of_interest", r"^(conflicts?\s+of\s+interest|competing\s+interests?)\b"),
     ("supplementary", r"^(supplementary|supporting\s+information)\b"),
 ]
-# Up to 3 leading non-word chars tolerated: some PDFs prepend a stray glyph
-# (ligature/dingbat artifact, e.g. '\x83') directly before the caption text.
+# Up to 3 leading non-word chars tolerated — EXCEPT an opening bracket: some
+# PDFs prepend a stray glyph (ligature/dingbat artifact, e.g. '\x83') directly
+# before the caption text, but a leading '(' / '[' / '{' marks an *inline
+# citation* ("(Figure 2d–e)"), never a caption.
 # "Extended Data"/"Supplementary" are standardized cross-journal caption
 # prefixes (not a journal-specific guess), so they're folded into the same
 # robust anchor rather than treated as a separate heuristic.
-FIGURE_RE = re.compile(r"^\W{0,3}((extended\s+data|supplementary)\s+)?fig(ure)?\.?\s*\d", re.IGNORECASE)
-TABLE_RE = re.compile(r"^\W{0,3}((extended\s+data|supplementary)\s+)?tab(le)?\.?\s*\d", re.IGNORECASE)
+# The figure/table number must be terminated by whitespace, '.', ':' or the end
+# of the block — a caption reads "Fig. 2 …" / "Fig. 2." / "Fig. 2:", whereas a
+# panel citation reads "Fig. 2d–e" / "Fig. 2a, b". A corpus scan (90 papers)
+# found every "digit-then-letter" match to be a citation and zero real captions,
+# so this suffix guard removes the dominant false-positive class with no loss.
+_NUM_END = r"\d+(?=[\s.:]|$)"
+FIGURE_RE = re.compile(r"^[^\w(\[{]{0,3}((extended\s+data|supplementary)\s+)?fig(ure)?\.?\s*" + _NUM_END, re.IGNORECASE)
+TABLE_RE = re.compile(r"^[^\w(\[{]{0,3}((extended\s+data|supplementary)\s+)?tab(le)?\.?\s*" + _NUM_END, re.IGNORECASE)
 HYPHEN_RE = re.compile(r"[a-z]-$")
 
 
@@ -305,6 +313,116 @@ def classify_blocks(blocks: list[Block], stats: DocStats, n_pages: int) -> None:
         last_typed_block = b
 
 
+def _x_overlap(a: Block, b: Block) -> bool:
+    return min(a.x1, b.x1) - max(a.x0, b.x0) > 0
+
+
+def _y_overlap(a: Block, b: Block) -> bool:
+    return min(a.y1, b.y1) - max(a.y0, b.y0) > 0
+
+
+def _is_caption_anchor(b: Block) -> bool:
+    """A float block that literally opens with 'Fig. N' / 'Table N' — the
+    physical start of a caption, as opposed to an absorbed continuation.
+    FIGURE_RE/TABLE_RE already exclude inline citations (leading bracket, or a
+    panel suffix like 'Fig. 2d'), so this is a straight regex test."""
+    t = b.text.strip()
+    return b.type in ("figure_legend", "table_caption") and bool(
+        FIGURE_RE.match(t) or TABLE_RE.match(t))
+
+
+def regroup_captions(blocks: list[Block], stats: DocStats) -> list[Block]:
+    """Re-attach caption continuations that `classify_blocks` orphaned.
+
+    `classify_blocks` chains a caption forward only while the *sort-adjacent*
+    predecessor is still a caption. In a two-column layout that chain snaps
+    whenever a block from the other column interleaves by y0, or when the
+    continuation sorts ahead of its own 'Fig. N' anchor — the orphan then falls
+    into `body`/`back_matter` (the caption font here equals the doc's
+    `second_size`, so it reads as body). This geometric pass recovers those
+    orphans without relying on sort adjacency, then merges each caption's blocks
+    into their anchor so every float renders as one contiguous entry.
+    """
+    absorbed: dict[int, Block] = {}   # id(continuation) -> anchor
+    groups: dict[int, list[Block]] = {}  # id(anchor) -> [anchor, *continuations]
+
+    by_page: dict[int, list[Block]] = {}
+    for b in blocks:
+        by_page.setdefault(b.page, []).append(b)
+
+    for page, pblocks in by_page.items():
+        ps = stats.pages.get(page)
+        mid = ps.column_mid if ps else 0
+        tol = stats.line_height
+        max_gap = stats.line_height * 1.5
+
+        anchors = [b for b in pblocks if _is_caption_anchor(b)]
+        for anchor in anchors:
+            groups.setdefault(id(anchor), [anchor])
+
+            # Only reflow when the caption font is typographically distinct from
+            # body text. If the caption is set in the body size, geometry alone
+            # cannot separate legend from prose, so absorbing neighbours would
+            # pull real body text into the caption — stay conservative and leave
+            # classify_blocks' per-block decision untouched.
+            if abs(anchor.size - stats.body_size) < 0.5:
+                continue
+
+            def eligible(b: Block) -> bool:
+                return (b is not anchor and id(b) not in absorbed
+                        and not _is_caption_anchor(b) and b.n_chars > 20
+                        and b.type not in ("heading", "header", "footer", "title")
+                        and abs(b.size - anchor.size) < 0.6)
+
+            # (1) Same-column downward walk: caption text stacked directly below
+            # the anchor in the anchor's own column, extending as far as the
+            # contiguous run of caption-size blocks reaches.
+            col_below = sorted(
+                (b for b in pblocks if eligible(b) and _x_overlap(b, anchor)),
+                key=lambda b: b.y0)
+            bottom = anchor.y1
+            grew = True
+            while grew:
+                grew = False
+                for b in col_below:
+                    if id(b) in absorbed:
+                        continue
+                    if anchor.y0 - tol <= b.y0 <= bottom + max_gap:
+                        absorbed[id(b)] = anchor
+                        groups[id(anchor)].append(b)
+                        bottom = max(bottom, b.y1)
+                        grew = True
+
+            # (2) Cross-column band: a full-width caption whose tail sits in the
+            # opposite column on the anchor's *own* rows (Fig. 1/2/5). Anchoring
+            # the y-overlap test to the anchor — never to an already-absorbed
+            # block — is what keeps a same-side back-matter block far below the
+            # anchor (e.g. Acknowledgements) from being pulled in.
+            anchor_left = anchor.x0 < mid
+            for b in pblocks:
+                if not eligible(b):
+                    continue
+                if (b.x0 < mid) != anchor_left and _y_overlap(b, anchor):
+                    absorbed[id(b)] = anchor
+                    groups[id(anchor)].append(b)
+
+    if not absorbed:
+        return blocks
+
+    # Merge each caption's blocks into its anchor in column-first reading order
+    # (mirrors assemble_reading_order's bucketing), then drop the continuations.
+    for anchor_id, members in groups.items():
+        if len(members) == 1:
+            continue
+        anchor = members[0]
+        ps = stats.pages.get(anchor.page)
+        mid = ps.column_mid if ps else 0
+        members.sort(key=lambda b: (0 if b.x0 < mid else 1, b.y0, b.x0))
+        anchor.text = " ".join(m.text for m in members).strip()
+
+    return [b for b in blocks if id(b) not in absorbed]
+
+
 def assemble_reading_order(blocks: list[Block], stats: DocStats) -> list[Block]:
     ordered = []
     by_page = {}
@@ -355,9 +473,9 @@ def render_markdown(blocks: list[Block]) -> str:
         elif b.type == "heading":
             out.append(f"## {text}")
         elif b.type == "figure_legend":
-            out.append(f"> [FIGURE] {text}")
+            out.append(f"> [FIGURE] {re.sub(r'^\W+', '', text)}")
         elif b.type == "table_caption":
-            out.append(f"> [TABLE] {text}")
+            out.append(f"> [TABLE] {re.sub(r'^\W+', '', text)}")
         else:
             out.append(text)
     return "\n\n".join(out)
@@ -372,6 +490,7 @@ def main():
     blocks = load_blocks(pdf_path)
     stats = compute_doc_stats(blocks, n_pages)
     classify_blocks(blocks, stats, n_pages)
+    blocks = regroup_captions(blocks, stats)
 
     print(f"body_font=({stats.body_font!r}, {stats.body_size}) "
           f"second=({stats.second_font!r}, {stats.second_size}) pages={n_pages}")

@@ -86,9 +86,10 @@ except ImportError:
 try:
     import fitz  # PyMuPDF
     from pdf_layout_parser import (
-        load_blocks, compute_doc_stats, classify_blocks,
+        load_blocks, compute_doc_stats, classify_blocks, regroup_captions,
         assemble_reading_order, render_markdown,
     )
+    import figure_extract
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
@@ -1307,6 +1308,7 @@ def cmd_parse_pdf_blocks(args):
     blocks = load_blocks(pdf_full_path)
     stats = compute_doc_stats(blocks, n_pages)
     classify_blocks(blocks, stats, n_pages)
+    blocks = regroup_captions(blocks, stats)
     ordered = assemble_reading_order(blocks, stats)
     full_text = render_markdown(ordered)
 
@@ -1355,6 +1357,114 @@ def cmd_parse_pdf_blocks(args):
         "block_type_counts": type_counts,
         "char_count": len(full_text),
     }, indent=2))
+
+
+def cmd_extract_floats(args):
+    """EXPERIMENTAL: render each figure/table to a PNG and store it as a scilit-figure /
+    scilit-table fragment (number + caption + the cropped image + structured table rows),
+    linked to the paper's full-text artifact via alh-fragmentation. Reuses the PDF that
+    `fetch-pdf` downloaded; never re-downloads. Detection is caption-anchored +
+    negative-space (see figure_extract.py) so it handles raster AND vector figures, ruled
+    tables, cross-page legends, and multiple floats per page. Idempotent per (paper, number)."""
+    if not PYMUPDF_AVAILABLE:
+        print(json.dumps({"success": False,
+                          "error": "pymupdf not installed. Run: uv add pymupdf"}))
+        sys.exit(1)
+
+    paper_id = args.id
+    paper_hash = paper_id.split("-")[-1]
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            res = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+                f'fetch {{ "name": $p.name }};').resolve())
+        if not res:
+            print(json.dumps({"success": False, "error": f"Paper not found: {paper_id}"}))
+            sys.exit(1)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            existing = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+                f'$a isa scilit-pdf-fulltext; '
+                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+                f'fetch {{ "id": $a.id, "cache-path": $a.cache-path }};').resolve())
+
+    pdf_cache_path = None
+    whole_artifact_id = None
+    for art in existing:
+        aid = art.get("id") or ""
+        if aid == f"scilit-fulltext-{paper_hash}":
+            whole_artifact_id = aid
+        cp = art.get("cache-path") or ""
+        cand = cp[:-4] + ".pdf" if cp.endswith(".txt") else cp
+        if cand.endswith(".pdf") and (_get_cache_dir() / cand).exists():
+            pdf_cache_path = cand
+    if whole_artifact_id is None and existing:
+        whole_artifact_id = existing[0].get("id")
+    if not pdf_cache_path:
+        print(json.dumps({"success": False,
+                          "error": f"No cached PDF for {paper_id}. Run fetch-pdf first."}))
+        sys.exit(1)
+    if not whole_artifact_id:
+        print(json.dumps({"success": False,
+                          "error": f"No full-text artifact for {paper_id}."}))
+        sys.exit(1)
+    pdf_full_path = str(_get_cache_dir() / pdf_cache_path)
+
+    print(f"Extracting floats ({pdf_full_path}) ...", file=sys.stderr)
+    doc, floats = figure_extract.extract_floats(pdf_full_path)
+    ts = get_timestamp()
+    subdir = f"fulltext/{paper_id}"
+    manifest = []
+    with get_driver() as driver:
+        for f in floats:
+            entry = {"kind": f.kind, "number": f.number,
+                     "caption_page": f.caption_page + 1,
+                     "unpaired": f.unpaired, "reason": f.reason}
+            if f.unpaired or f.region is None:
+                manifest.append(entry)
+                continue
+            png = figure_extract.render_region(doc[f.region.page], f.region.rect)
+            frag_id = f"scilit-{'fig' if f.kind == 'figure' else 'tbl'}-{paper_hash}-{f.number}"
+            cache = save_to_cache(frag_id, png, "image/png", subdir=subdir)
+            etype = "scilit-figure" if f.kind == "figure" else "scilit-table"
+            numattr = "scilit-figure-number" if f.kind == "figure" else "scilit-table-number"
+            content = (json.dumps(f.table_rows) if (f.kind == "table" and f.table_rows)
+                       else f.caption_text)
+            fmt = "figure-page-crop" if f.kind == "figure" else "table-page-crop"
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                # idempotent: drop any prior fragment at this id + its fragmentation link
+                tx.query(f'match $f isa alh-fragment, has id "{frag_id}"; '
+                         f'$r isa alh-fragmentation, links (part: $f); delete $r;').resolve()
+                tx.query(f'match $f isa alh-fragment, has id "{frag_id}"; delete $f;').resolve()
+                tx.query(
+                    f'insert $f isa {etype}, has id "{frag_id}", '
+                    f'has {numattr} "{escape_string(f.number)}", '
+                    f'has scilit-caption "{escape_string(f.caption_text)}", '
+                    f'has content "{escape_string(content)}", '
+                    f'has cache-path "{escape_string(cache["cache_path"])}", '
+                    f'has mime-type "image/png", '
+                    f'has content-hash "{cache["content_hash"]}", '
+                    f'has file-size {cache["file_size"]}, '
+                    f'has format "{fmt}", '
+                    f'has offset 0, has length {cache["file_size"]}, '
+                    f'has created-at {ts};').resolve()
+                tx.commit()
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(
+                    f'match $a isa alh-artifact, has id "{whole_artifact_id}"; '
+                    f'$f isa alh-fragment, has id "{frag_id}"; '
+                    f'insert (whole: $a, part: $f) isa alh-fragmentation;').resolve()
+                tx.commit()
+            entry.update({"fragment_id": frag_id, "cache_path": cache["cache_path"],
+                          "image_page": f.region.page + 1,
+                          "table_rows": len(f.table_rows) if f.table_rows else None})
+            manifest.append(entry)
+    doc.close()
+    paired = [m for m in manifest if not m["unpaired"]]
+    print(json.dumps({"success": True, "paper_id": paper_id,
+                      "whole_artifact": whole_artifact_id,
+                      "n_paired": len(paired), "n_flagged": len(manifest) - len(paired),
+                      "floats": manifest}, indent=2))
 
 
 def cmd_show(args):
@@ -2835,7 +2945,8 @@ def _load_template(tx, template_id):
     esc = escape_string(template_id)
     head = list(tx.query(
         f'match $t isa kefed-model, has id "{esc}", has kefed-model-state "template"; '
-        f'fetch {{ "id": $t.id, "name": $t.name }};').resolve())
+        f'fetch {{ "id": $t.id, "name": $t.name, '
+        f'"definition": $t.ooevv-definition, "long_form": $t.ooevv-long-form }};').resolve())
     if not head:
         return None
     tpl = {k: v for k, v in head[0].items() if v is not None}
@@ -5551,6 +5662,14 @@ def main():
     p.add_argument("--id", required=True,
         help="scilit-paper TypeDB ID (e.g. scilit-paper-fd0a1617ef99)")
 
+    # extract-floats (EXPERIMENTAL)
+    p = subparsers.add_parser("extract-floats",
+        help="EXPERIMENTAL: render each figure/table to a PNG and store it as a "
+             "scilit-figure/scilit-table fragment (caption-anchored + negative-space "
+             "detection, PyMuPDF) — requires fetch-pdf to have run first")
+    p.add_argument("--id", required=True,
+        help="scilit-paper TypeDB ID (e.g. scilit-paper-abed567f5ca6)")
+
     # show
     p = subparsers.add_parser("show", help="Show a paper for sensemaking")
     p.add_argument("--id", required=True, help="Paper ID (scilit-paper-...)")
@@ -6041,6 +6160,7 @@ def main():
         "ingest": cmd_ingest,
         "fetch-pdf": cmd_fetch_pdf,
         "parse-pdf-blocks": cmd_parse_pdf_blocks,
+        "extract-floats": cmd_extract_floats,
         "show": cmd_show,
         "list": cmd_list,
         "list-collections": cmd_list_collections,

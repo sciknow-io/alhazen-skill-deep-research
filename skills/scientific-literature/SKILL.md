@@ -116,14 +116,30 @@ Reconciliation prototypes that retrofit existing data to this layout live in
 
 ---
 
-## KEfED Model Authoring — build STRUCTURED, RICH, ACCURATE, EXPRESSIVE models
+## KEfED Model Authoring — templates first; instantiate by binding grounded values
 
-A KEfED model (`kefed-model`, authored under a bundle with `add-experiment`) is a **graph of
-`kefed-model-node`s** that reconstructs an experiment. Follow these principles:
+**The standard is templates-first.** A KEfED model (`kefed-model`, a **graph of
+`kefed-model-node`s** reconstructing an experiment) is authored as an **instance of a reusable,
+documented design TEMPLATE** — never built ad hoc per paper. The design skeleton is reusable and
+comparable across papers; the scientific meaning lives entirely in the **semantics and background
+knowledge linked to the grounded VALUES** bound to the template's parameters and constants.
+
+**Workflow:** `recognize the design type → find-or-create a template → instantiate it under the
+paper's bundle → bind grounded values → compose templates for multi-arm designs`. This makes
+correctness a structural consequence of reuse rather than per-paper vigilance.
+
+**A template = a documented design pattern** (`ensure-template`, `kefed-model-state: template`): a
+generic bigraph plus a stated **purpose** and the **warrant** its data-signature licenses (e.g.
+*sufficiency* = a phenotype readout indexed by `{transgene × induction}`). Its data-signature
+topology is the template's fingerprint: any experiment with that signature IS an instance of that
+design type, regardless of which gene/reagent/cell fills it. **Recognize before you build:**
+`list-templates` / `list-qualities` / `list-entities`.
+
+Build (or extend) a template's generic graph with these principles:
 
 1. **Reconstruct the real protocol from the paper's Methods.** Read the Experimental Procedures and
-   build the actual material chain — *organism → sample preparation → assay → readout* — including where
-   cells came from and how they were prepared (harvest, sort, lineage-deplete, transduce, transplant,
+   build the actual material chain — *organism → sample preparation → sample → manipulation → manipulated_sample → assay → readout* — 
+   including where cells came from and how they were prepared (harvest, sort, lineage-deplete, transduce, transplant,
    culture...). The **combination of nodes in the graph carries the experimental-design semantics**, not
    any single node.
 
@@ -185,13 +201,51 @@ A KEfED model (`kefed-model`, authored under a bundle with `add-experiment`) is 
    Add such a node when the paper's workflow genuinely implies it; for standard reagents (an inbred strain,
    a catalog cell line) capture identity as a **constant** rather than inventing a procurement step.
 
+6. **Compose templates for multi-arm designs.** When an experiment chains designs — e.g. a
+   conditional-overexpression *sufficiency* assay whose output feeds a *conditioned-media bioassay*
+   on a second cell type — instantiate BOTH templates and wire one's **exported** node as the
+   other's **imported** input. The downstream arm then inherits the upstream arm's full
+   data-signature through the transfer edge automatically (a paracrine readout is correctly indexed
+   by its *source's* `{transgene × induction × time}`). **Never hand-duplicate a shared parameter** —
+   place each parameter once, at the upstream node where it is set, and let the flow graph propagate
+   it (duplicating it downstream is the classic signature-inflation bug).
+
+7. **Instantiate by binding GROUNDED values — this is where meaning lives.** `instantiate-template
+   --bundle --template` creates the instance; fill each parameter/constant with `add-datum` (grounded
+   values, one row per data point). Every bound value carries the science and must be grounded to a
+   real term — genes/proteins → HGNC/PR, chemicals → CHEBI, cells → CL/CLO, qualities → PATO/EFO —
+   **looked up, never invented** (e.g. `transgene = CHOP → HGNC:DDIT3`, `inducer = doxycycline →
+   CHEBI`, `subject = MLE12 → CLO`). Template structure + grounded values = the interpretable claim.
+   Corollary: because all cross-paper variation is in the bound values, a *bound constant* such as the
+   inducing reagent is freely swappable (doxycycline → 4-OHT → IPTG) while the design feature it
+   expresses — here inducibility, which buys a within-line ± control — is what the template guarantees.
+
+**Read the figure/table, not just the legend.** The legend + Methods give the template *structure*;
+the figure/table IMAGE gives the instance's *data-signature dimensions and values* (panel layout, axes,
+series, bar heights, significance). Run **`extract-floats --id <paper>`** (a curation precondition
+alongside `fetch-pdf`/`parse-pdf-blocks`) to render each figure/table to a PNG stored as a
+`scilit-figure`/`scilit-table` fragment on the paper's full-text artifact. Detection is
+**caption-anchored + negative-space**: `Fig N`/`Table N` captions anchor floats, and a float region is
+low-body-text page area carrying graphical content (raster **or** vector drawings **or** ruled table
+grid) — so it handles vector-native figures, ruled tables, cross-page legends, and multiple floats per
+page, and it **flags (never guesses)** any region it cannot pair to a caption. Then read each float
+image to fill the instance's `add-datum` rows. **Value source, in order of preference:** a real
+source-data table (supplement / GEO) → the float's `find_tables` rows → chart-read estimates (tag these
+`value-source: figure-estimate`). Link each datum's observation to the float's fragment id + panel so
+evidence traces to the pixels.
+
 **Grounding policy (non-negotiable):** attach a curie **only** when a real ontology term's definition
 genuinely matches the intended meaning. If a term can't be grounded, or the candidate's definition is
 wrong, **OMIT the grounding** — better ungrounded-with-a-precise-local-definition than wrongly grounded.
 
-**Verb sequence:** `add-experiment [--element-set]` → `add-entity-node --subject` / `add-process --type`
-→ `link-nodes --role input|output` → `ensure-quality [--curie]` → `ensure-value-spec --quality
---scale-type` → `add-variable --value-spec` → `show-experiment` / `show-data-signature` to verify.
+**Verb sequence.** *Author/extend a template:* `ensure-template [--element-set]` → `add-entity-node
+--template <sctpl> --subject` / `add-process --template <sctpl> --type` → `link-nodes --role
+input|output` → `ensure-quality [--curie]` → `ensure-value-spec --quality --scale-type` →
+`add-variable --value-spec` → `show-template` / `show-data-signature` to verify the fingerprint.
+*Instantiate for a paper:* `instantiate-template --bundle <scsense> --template <sctpl>` → `add-datum
+--cells` (grounded values, one row per data point) → `show-instance`. A genuinely novel one-off with
+no template can still be built directly with `add-experiment [--element-set]`, but prefer promoting
+the recurring design to a template.
 
 **Correcting an existing model (edit verbs).** To bring an already-curated model up to the rules above
 without rebuilding it — the node id, its variables and its flow edges are preserved:
