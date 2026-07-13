@@ -54,7 +54,13 @@ except ImportError:
     print("Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.8.0'",
           file=sys.stderr)
 
-from paper_identity import paper_identity
+# paper_identity is a sibling module. Running this file as a script puts its dir on sys.path
+# automatically, but the warm gateway loads it via importlib (which does not), so add it here.
+try:
+    from paper_identity import paper_identity
+except ModuleNotFoundError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from paper_identity import paper_identity
 
 try:
     from skillful_alhazen.utils.skill_helpers import escape_string, generate_id, get_timestamp
