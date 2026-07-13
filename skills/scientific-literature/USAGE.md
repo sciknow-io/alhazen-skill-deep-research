@@ -654,6 +654,31 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py expo
 `claims` (sorted primary → secondary → peripheral, each with nested `evidence` and its
 `source_paper`), and `citation_impacts` (each with its `citing_paper`).
 
+### `export-sensemaking-html` -- Standalone HTML of a paper's sensemaking
+
+Port a paper's sensemaking curation to a **self-contained** `.html` file that opens directly in a
+browser — no server, no build step. It reproduces the dashboard's per-paper sensemaking view
+(citation header, abstract/notes, the sensemaking-checks box, the claim-centric walkthrough with
+each claim's observations + matched KEfED instances, "additional evidence models", and gaps) from
+the same CLI payloads the dashboard renders (`show`, `show-paper-curation`, `lint-sensemaking`).
+As in the dashboard, System-3 mechanisms are not part of the sensemaking view and are not rendered.
+
+```bash
+# one paper
+uv run python .claude/skills/scientific-literature/scientific_literature.py export-sensemaking-html \
+    --id scilit-paper-... --out-dir ./out
+
+# every paper in an investigation (also writes an index.html cover page)
+uv run python .claude/skills/scientific-literature/scientific_literature.py export-sensemaking-html \
+    --investigation scinv-... --out-dir ./out
+# -> { "success": true, "out_dir": "...", "index": ".../index.html",
+#      "papers_written": [".../scilit-paper-....html", ...], "skipped": [...] }
+```
+
+Files are named `<paper-id>.html`. Papers without a sensemaking bundle are reported in `skipped`.
+The rendering logic lives in the dependency-free `sensemaking_html.py` module (stdlib only; no
+TypeDB/network), so it can also be called directly on saved JSON payloads.
+
 ---
 
 ## Meeting surveys (discourse sources)

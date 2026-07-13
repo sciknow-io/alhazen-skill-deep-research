@@ -1473,51 +1473,58 @@ def cmd_extract_floats(args):
                       "floats": manifest}, indent=2))
 
 
+def _build_paper_detail(tx, pid):
+    """Bibliographic paper payload (header + abstract + notes + keywords + full-text artifacts).
+
+    Shared by `show` (CLI) and the standalone HTML exporter. Returns the same dict the `show`
+    command prints, or {"success": False, ...} when the paper does not exist."""
+    esc = escape_string(pid)
+    result = list(tx.query(
+        f'match $p isa scilit-paper, has id "{esc}"; '
+        f'fetch {{ "id": $p.id, "name": $p.name, "abstract-text": $p.abstract-text, '
+        f'"doi": $p.scilit-doi, "pmid": $p.scilit-pmid, "year": $p.scilit-publication-year, '
+        f'"journal": $p.scilit-journal-name, "volume": $p.scilit-journal-volume, '
+        f'"issue": $p.scilit-journal-issue, "pages": $p.scilit-page-range, '
+        f'"authors": $p.scilit-author-list, "source-uri": $p.source-uri }};'
+    ).resolve())
+    if not result:
+        return {"success": False, "error": "Paper not found"}
+
+    notes = list(tx.query(
+        f'match $p isa scilit-paper, has id "{esc}"; '
+        f'(note: $n, subject: $p) isa alh-aboutness; '
+        f'fetch {{ "id": $n.id, "name": $n.name, "content": $n.content }};'
+    ).resolve())
+    art_results = list(tx.query(
+        f'match $p isa scilit-paper, has id "{esc}"; '
+        f'$a isa scilit-pdf-fulltext; '
+        f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+        f'fetch {{ "id": $a.id, "source-uri": $a.source-uri, '
+        f'"cache-path": $a.cache-path, "file-size": $a.file-size }};'
+    ).resolve())
+    kw_results = list(tx.query(
+        f'match $p isa scilit-paper, has id "{esc}", '
+        f'has scilit-keyword $k; fetch {{ "k": $k }};'
+    ).resolve())
+
+    return {
+        "success": True,
+        "paper": {k: v for k, v in result[0].items() if v is not None},
+        "keywords": [r["k"] for r in kw_results],
+        "notes": [{k: v for k, v in n.items() if v is not None} for n in notes],
+        "pdf_artifacts": [{k: v for k, v in a.items() if v is not None} for a in art_results],
+    }
+
+
 def cmd_show(args):
     """Show a paper's details for sensemaking."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            result = list(tx.query(
-                f'match $p isa scilit-paper, has id "{args.id}"; '
-                f'fetch {{ "id": $p.id, "name": $p.name, "abstract-text": $p.abstract-text, '
-                f'"doi": $p.scilit-doi, "pmid": $p.scilit-pmid, "year": $p.scilit-publication-year, '
-                f'"journal": $p.scilit-journal-name, "volume": $p.scilit-journal-volume, '
-                f'"issue": $p.scilit-journal-issue, "pages": $p.scilit-page-range, '
-                f'"authors": $p.scilit-author-list, "source-uri": $p.source-uri }};'
-            ).resolve())
-
-            if not result:
-                print(json.dumps({"success": False, "error": "Paper not found"}))
-                sys.exit(1)
-
-            notes = list(tx.query(
-                f'match $p isa scilit-paper, has id "{args.id}"; '
-                f'(note: $n, subject: $p) isa alh-aboutness; '
-                f'fetch {{ "id": $n.id, "name": $n.name, "content": $n.content }};'
-            ).resolve())
-
-            art_results = list(tx.query(
-                f'match $p isa scilit-paper, has id "{escape_string(args.id)}"; '
-                f'$a isa scilit-pdf-fulltext; '
-                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
-                f'fetch {{ "id": $a.id, "source-uri": $a.source-uri, '
-                f'"cache-path": $a.cache-path, "file-size": $a.file-size }};'
-            ).resolve())
-
-            kw_results = list(tx.query(
-                f'match $p isa scilit-paper, has id "{escape_string(args.id)}", '
-                f'has scilit-keyword $k; fetch {{ "k": $k }};'
-            ).resolve())
-
-    paper = {k: v for k, v in result[0].items() if v is not None}
-    keywords = [r["k"] for r in kw_results]
-    print(json.dumps({
-        "success": True,
-        "paper": paper,
-        "keywords": keywords,
-        "notes": [{k: v for k, v in n.items() if v is not None} for n in notes],
-        "pdf_artifacts": [{k: v for k, v in a.items() if v is not None} for a in art_results],
-    }, indent=2))
+            payload = _build_paper_detail(tx, args.id)
+    if not payload.get("success"):
+        print(json.dumps(payload))
+        sys.exit(1)
+    print(json.dumps(payload, indent=2))
 
 
 def cmd_list(args):
@@ -3465,73 +3472,82 @@ def cmd_show_stage(args):
     print(json.dumps({"success": True, **stage}, indent=2))
 
 
-def cmd_show_paper_curation(args):
+def _build_paper_curation(tx, pid):
     """One-shot payload for the single-paper curation walkthrough: paper + full-text artifact,
     verbatim fragments, span-anchoring (alh-derivation), the full sensemaking bundle
-    (observations / claims / gaps / mechanisms / KEfED experiments / data instances), and a
-    data signature per experiment. hasCuration=False when the paper has no bundle."""
-    pid = args.id
-    with get_driver() as driver:
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            head = list(tx.query(
-                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
-                f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "pmid": $p.scilit-pmid, '
-                f'"year": $p.scilit-publication-year, "journal": $p.scilit-journal-name, '
-                f'"volume": $p.scilit-journal-volume, "issue": $p.scilit-journal-issue, '
-                f'"pages": $p.scilit-page-range, "authors": $p.scilit-author-list, '
-                f'"acquisition_status": $p.scilit-acquisition-status }};').resolve())
-            if not head:
-                print(json.dumps({"success": False, "error": "Paper not found"})); sys.exit(1)
-            paper = {k: v for k, v in head[0].items() if v is not None}
-            art = list(tx.query(
-                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; $a isa scilit-pdf-fulltext; '
-                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
-                f'fetch {{ "id": $a.id, "cache-path": $a.cache-path, "file-size": $a.file-size, '
-                f'"format": $a.format, "source-uri": $a.source-uri }};').resolve())
-            fulltext = ({k: v for k, v in art[0].items() if v is not None} if art else None)
+    (observations / claims / gaps / KEfED experiments / data instances), and a data signature per
+    experiment. hasCuration=False when the paper has no bundle; success=False when it is missing.
 
-            b = list(tx.query(
-                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
-                f'(sensemaking: $bn, paper: $p) isa scilit-sensemaking-paper; '
-                f'fetch {{ "id": $bn.id }};').resolve())
-            if not b:
-                print(json.dumps({"success": True, "hasCuration": False,
-                                  "paper": paper, "fulltext": fulltext}, indent=2))
-                return
-            bundle_id = b[0]["id"]
-            bundle = _load_bundle(tx, bundle_id)
-            # Mechanism graph is no longer part of the sensemaking view — drop it from the
-            # walkthrough payload (schema + show-bundle keep it, dormant).
-            bundle.pop("mechanisms", None)
-            fragments = _load_fragments(tx, pid)
-            derivations = _load_derivations(tx, pid)
-            # claim -> observation grounding edges (scilit-claim-observation)
-            co_rows = list(tx.query(
-                f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
-                f'(sensemaking: $b, reported-claim: $c) isa scilit-sensemaking-reported-claim; '
-                f'(claim: $c, observation: $o) isa scilit-claim-observation; '
-                f'fetch {{ "claim": $c.id, "observation": $o.id }};').resolve())
-            claim_observations = [{k: v for k, v in r.items() if v is not None} for r in co_rows]
-            spine_rows = list(tx.query(
-                f'match $bn isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
-                f'(phase: $ph, sensemaking: $bn) isa scilit-phase-sensemaking; '
-                f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
-                f'(investigation: $iv, iteration: $it) isa scilit-investigation-iteration; '
-                f'$it has scilit-iteration-index $idx; '
-                f'fetch {{ "id": $iv.id, "name": $iv.name, "iteration": $idx, "phase": $ph.id }};').resolve())
-            spine = ({k: v for k, v in spine_rows[0].items() if v is not None} if spine_rows else None)
-            signatures = {}
-            for e in bundle.get("experiments", []):
-                try:
-                    signatures[e["id"]] = _data_signature(tx, e["id"])
-                except Exception:
-                    signatures[e["id"]] = {}
-    print(json.dumps({
+    Shared by `show-paper-curation` (CLI) and the standalone HTML exporter — both read it inside
+    their own transaction."""
+    head = list(tx.query(
+        f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
+        f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "pmid": $p.scilit-pmid, '
+        f'"year": $p.scilit-publication-year, "journal": $p.scilit-journal-name, '
+        f'"volume": $p.scilit-journal-volume, "issue": $p.scilit-journal-issue, '
+        f'"pages": $p.scilit-page-range, "authors": $p.scilit-author-list, '
+        f'"acquisition_status": $p.scilit-acquisition-status }};').resolve())
+    if not head:
+        return {"success": False, "error": "Paper not found"}
+    paper = {k: v for k, v in head[0].items() if v is not None}
+    art = list(tx.query(
+        f'match $p isa scilit-paper, has id "{escape_string(pid)}"; $a isa scilit-pdf-fulltext; '
+        f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+        f'fetch {{ "id": $a.id, "cache-path": $a.cache-path, "file-size": $a.file-size, '
+        f'"format": $a.format, "source-uri": $a.source-uri }};').resolve())
+    fulltext = ({k: v for k, v in art[0].items() if v is not None} if art else None)
+
+    b = list(tx.query(
+        f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
+        f'(sensemaking: $bn, paper: $p) isa scilit-sensemaking-paper; '
+        f'fetch {{ "id": $bn.id }};').resolve())
+    if not b:
+        return {"success": True, "hasCuration": False, "paper": paper, "fulltext": fulltext}
+    bundle_id = b[0]["id"]
+    bundle = _load_bundle(tx, bundle_id)
+    # Mechanism graph is no longer part of the sensemaking view — drop it from the
+    # walkthrough payload (schema + show-bundle keep it, dormant).
+    bundle.pop("mechanisms", None)
+    fragments = _load_fragments(tx, pid)
+    derivations = _load_derivations(tx, pid)
+    # claim -> observation grounding edges (scilit-claim-observation)
+    co_rows = list(tx.query(
+        f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
+        f'(sensemaking: $b, reported-claim: $c) isa scilit-sensemaking-reported-claim; '
+        f'(claim: $c, observation: $o) isa scilit-claim-observation; '
+        f'fetch {{ "claim": $c.id, "observation": $o.id }};').resolve())
+    claim_observations = [{k: v for k, v in r.items() if v is not None} for r in co_rows]
+    spine_rows = list(tx.query(
+        f'match $bn isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
+        f'(phase: $ph, sensemaking: $bn) isa scilit-phase-sensemaking; '
+        f'(iteration: $it, stage: $ph) isa scilit-iteration-stage; '
+        f'(investigation: $iv, iteration: $it) isa scilit-investigation-iteration; '
+        f'$it has scilit-iteration-index $idx; '
+        f'fetch {{ "id": $iv.id, "name": $iv.name, "iteration": $idx, "phase": $ph.id }};').resolve())
+    spine = ({k: v for k, v in spine_rows[0].items() if v is not None} if spine_rows else None)
+    signatures = {}
+    for e in bundle.get("experiments", []):
+        try:
+            signatures[e["id"]] = _data_signature(tx, e["id"])
+        except Exception:
+            signatures[e["id"]] = {}
+    return {
         "success": True, "hasCuration": True, "paper": paper, "fulltext": fulltext,
         "bundle_id": bundle_id, "spine": spine, "fragments": fragments,
         "derivations": derivations, "claim_observations": claim_observations,
         "bundle": bundle, "signatures": signatures,
-    }, indent=2))
+    }
+
+
+def cmd_show_paper_curation(args):
+    """CLI wrapper: print the single-paper curation walkthrough payload (see _build_paper_curation)."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            payload = _build_paper_curation(tx, args.id)
+    if not payload.get("success"):
+        print(json.dumps(payload))
+        sys.exit(1)
+    print(json.dumps(payload, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -3659,34 +3675,31 @@ SENSEMAKING_CHECKS = [
 ]
 
 
-def cmd_lint_sensemaking(args):
-    """Linter over a paper's sensemaking curation (KQED rhetoric + KEfED experiments + OOEVV vocab).
-    Loads the bundle once and runs SENSEMAKING_CHECKS; each finding carries status pass|warn|fail +
-    offending ids so Claude (or the dashboard) can verify the curation is well-formed."""
-    pid = args.id
-    with get_driver() as driver:
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            b = list(tx.query(
-                f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
-                f'(sensemaking: $bn, paper: $p) isa scilit-sensemaking-paper; '
-                f'fetch {{ "id": $bn.id }};').resolve())
-            if not b:
-                print(json.dumps({"success": True, "hasCuration": False, "paper": pid,
-                                  "checks": [], "summary": {"passed": 0, "warned": 0, "failed": 0}}, indent=2))
-                return
-            bundle_id = b[0]["id"]
-            bundle = _load_bundle(tx, bundle_id)
-            fragments = _load_fragments(tx, pid)
-            derivations = _load_derivations(tx, pid)
-            co_rows = list(tx.query(
-                f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
-                f'(sensemaking: $b, reported-claim: $c) isa scilit-sensemaking-reported-claim; '
-                f'(claim: $c, observation: $o) isa scilit-claim-observation; '
-                f'fetch {{ "claim": $c.id, "observation": $o.id }};').resolve())
-            claim_obs = {}
-            for r in co_rows:
-                claim_obs.setdefault(r["claim"], []).append(r["observation"])
-            signatures = {e["id"]: _data_signature(tx, e["id"]) for e in bundle.get("experiments", []) or []}
+def _build_sensemaking_checks(tx, pid):
+    """Run SENSEMAKING_CHECKS over a paper's curation and return the linter payload
+    (pass|warn|fail per finding + a summary). hasCuration=False when the paper has no bundle.
+
+    Shared by `lint-sensemaking` (CLI) and the standalone HTML exporter (checks box)."""
+    b = list(tx.query(
+        f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
+        f'(sensemaking: $bn, paper: $p) isa scilit-sensemaking-paper; '
+        f'fetch {{ "id": $bn.id }};').resolve())
+    if not b:
+        return {"success": True, "hasCuration": False, "paper": pid,
+                "checks": [], "summary": {"passed": 0, "warned": 0, "failed": 0}}
+    bundle_id = b[0]["id"]
+    bundle = _load_bundle(tx, bundle_id)
+    fragments = _load_fragments(tx, pid)
+    derivations = _load_derivations(tx, pid)
+    co_rows = list(tx.query(
+        f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
+        f'(sensemaking: $b, reported-claim: $c) isa scilit-sensemaking-reported-claim; '
+        f'(claim: $c, observation: $o) isa scilit-claim-observation; '
+        f'fetch {{ "claim": $c.id, "observation": $o.id }};').resolve())
+    claim_obs = {}
+    for r in co_rows:
+        claim_obs.setdefault(r["claim"], []).append(r["observation"])
+    signatures = {e["id"]: _data_signature(tx, e["id"]) for e in bundle.get("experiments", []) or []}
     ctx = {"paper": pid, "bundle": bundle, "fragments": fragments, "derivations": derivations,
            "claim_obs": claim_obs, "signatures": signatures}
     checks = [fn(ctx) for fn in SENSEMAKING_CHECKS]
@@ -3695,8 +3708,18 @@ def cmd_lint_sensemaking(args):
         "warned": sum(1 for c in checks if c["status"] == "warn"),
         "failed": sum(1 for c in checks if c["status"] == "fail"),
     }
-    print(json.dumps({"success": True, "hasCuration": True, "paper": pid, "bundle_id": bundle_id,
-                      "checks": checks, "summary": summary}, indent=2))
+    return {"success": True, "hasCuration": True, "paper": pid, "bundle_id": bundle_id,
+            "checks": checks, "summary": summary}
+
+
+def cmd_lint_sensemaking(args):
+    """Linter over a paper's sensemaking curation (KQED rhetoric + KEfED experiments + OOEVV vocab).
+    Loads the bundle once and runs SENSEMAKING_CHECKS; each finding carries status pass|warn|fail +
+    offending ids so Claude (or the dashboard) can verify the curation is well-formed."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            payload = _build_sensemaking_checks(tx, args.id)
+    print(json.dumps(payload, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -3884,6 +3907,64 @@ def cmd_export_investigation(args):
         print(json.dumps({"success": True, **investigation}, indent=2))
     else:
         print(_render_investigation_md(investigation))
+
+
+def cmd_export_sensemaking_html(args):
+    """Port a paper's (or a whole investigation's) sensemaking curation to standalone HTML.
+
+    Reproduces the dashboard's per-paper sensemaking view (paper-detail + paper-curation) as a
+    self-contained .html file that opens directly in a browser — no server, no build step. Give
+    either --id (one scilit-paper) or --investigation (every paper in it that has a bundle); files
+    are written to --out-dir as <paper-id>.html, plus an index.html in investigation mode."""
+    import sensemaking_html
+
+    out_dir = os.path.abspath(os.path.expanduser(args.out_dir))
+    os.makedirs(out_dir, exist_ok=True)
+
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            if args.investigation:
+                investigation = _load_investigation(tx, args.investigation)
+                if investigation is None:
+                    print(json.dumps({"success": False, "error": "Investigation not found"}))
+                    sys.exit(1)
+                paper_ids = [p["id"] for p in investigation.get("papers", [])]
+                index_href = "index.html"
+            else:
+                investigation = None
+                paper_ids = [args.id]
+                index_href = None
+
+            written, skipped = [], []
+            for pid in paper_ids:
+                curation = _build_paper_curation(tx, pid)
+                if not curation.get("success"):
+                    skipped.append({"paper": pid, "reason": curation.get("error", "error")})
+                    continue
+                if not curation.get("hasCuration"):
+                    skipped.append({"paper": pid, "reason": "no sensemaking bundle"})
+                    continue
+                detail = _build_paper_detail(tx, pid)
+                checks = _build_sensemaking_checks(tx, pid)
+                html_str = sensemaking_html.render_paper_html(
+                    curation,
+                    paper_full=detail if detail.get("success") else None,
+                    checks=checks if checks.get("hasCuration") else None,
+                    index_href=index_href,
+                )
+                path = os.path.join(out_dir, f"{pid}.html")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(html_str)
+                written.append(path)
+
+    index_path = None
+    if investigation is not None:
+        index_path = os.path.join(out_dir, "index.html")
+        with open(index_path, "w", encoding="utf-8") as fh:
+            fh.write(sensemaking_html.render_index_html(investigation))
+
+    print(json.dumps({"success": True, "out_dir": out_dir, "index": index_path,
+                      "papers_written": written, "skipped": skipped}, indent=2))
 
 
 def cmd_record_phase(args):
@@ -6180,6 +6261,14 @@ def main():
     p.add_argument("--id", required=True, help="Investigation ID (scinv-...)")
     p.add_argument("--format", choices=["md", "json"], default="md", help="Output format")
 
+    # export-sensemaking-html
+    p = subparsers.add_parser("export-sensemaking-html",
+        help="Render a paper's (or whole investigation's) sensemaking curation to standalone HTML")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--id", help="Paper ID (scilit-paper-...) — export one paper")
+    g.add_argument("--investigation", help="Investigation ID (scinv-...) — export every paper + an index")
+    p.add_argument("--out-dir", required=True, help="Directory to write the .html file(s) into")
+
     # backfill-investigation-collection
     p = subparsers.add_parser("backfill-investigation-collection",
         help="Rebuild an investigation's paper collection from existing aboutness links")
@@ -6288,6 +6377,7 @@ def main():
         "add-evidence": cmd_add_evidence,
         "add-citation-impact": cmd_add_citation_impact,
         "export-investigation": cmd_export_investigation,
+        "export-sensemaking-html": cmd_export_sensemaking_html,
         "backfill-investigation-collection": cmd_backfill_investigation_collection,
         "acquisition-worklist": cmd_acquisition_worklist,
     }
