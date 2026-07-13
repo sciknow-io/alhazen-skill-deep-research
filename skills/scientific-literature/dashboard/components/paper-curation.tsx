@@ -1,20 +1,31 @@
 'use client';
 
+// Claim-centric reading of a paper's sensemaking curation. One section per reported claim,
+// gathering everything that stands behind it: the claim statement, the rhetorical observations
+// that ground it (each shown with its verbatim fragment quotes), and — grouped heuristically by
+// observation-name prefix (rhetorical "OF3A" ⊂ datum "OF3A frag2 …") — the KEfED experiment
+// designs (rendered as JS protocol graphs, not mermaid) and their data as pivot tables.
+// Instances that match no claim fall into a trailing "Additional evidence models" section so
+// nothing is silently dropped. The sensemaking linter sits in a collapsible box up top.
+
 import { type ReactNode, useState, useEffect } from 'react';
+import Link from 'next/link';
 import { T } from './tokens';
 import { Panel } from './atoms';
-import { Mermaid } from './mermaid';
+import { KefedProtocolGraph } from './kefed-graph';
+import { Spreadsheet } from './kefed-instance';
 import { withDb } from './db';
-import {
-  layerOverviewMermaid, rawLayerMermaid, investigationSpineMermaid,
-  claimObservationMermaid, kefedModelMermaid,
-  verticalSliceMermaid, signatureCaption,
-} from './curation-diagrams';
-import type { PaperCurationDetail, OoevvVarBrief, BundleDetail, SensemakingCheck } from '@/lib/scientific-literature';
+import type {
+  PaperCurationDetail, BundleDetail, ReportedClaimNode, ObservationNode,
+  InstanceDetail, SensemakingCheck, InvestigationPaperRef,
+} from '@/lib/scientific-literature';
 
-// Sensemaking linter panel — fetches lint-sensemaking and shows pass/warn/fail per check so a
-// curator (or Claude) can see whether the paper's KEfED/OOEVV/KQED curation is well-formed.
-function SensemakingChecksPanel({ paperId }: { paperId?: string }) {
+// ─── styles ─────────────────────────────────────────────────────
+const subheadS: React.CSSProperties = { fontFamily: T.mono, fontSize: 10, fontWeight: 600, color: T.fgDim, textTransform: 'uppercase', letterSpacing: '0.7px', margin: '0 0 6px' };
+const tagS: React.CSSProperties = { fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint, textTransform: 'uppercase', letterSpacing: '0.5px', border: `1px solid ${T.borderDim}`, borderRadius: 3, padding: '1px 6px' };
+
+// ─── sensemaking linter (collapsible) ───────────────────────────
+function SensemakingChecksBox({ paperId }: { paperId?: string }) {
   const [checks, setChecks] = useState<SensemakingCheck[] | null>(null);
   const [summary, setSummary] = useState<{ passed: number; warned: number; failed: number } | null>(null);
 
@@ -23,277 +34,262 @@ function SensemakingChecksPanel({ paperId }: { paperId?: string }) {
     fetch(withDb(`/api/scientific-literature/paper/${paperId}/checks`))
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => { if (j && j.checks) { setChecks(j.checks); setSummary(j.summary); } })
-      .catch(() => { /* linter unavailable — panel stays quiet */ });
+      .catch(() => { /* linter unavailable — box stays quiet */ });
   }, [paperId]);
 
-  if (!checks) return <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>Running checks…</span>;
   const color = (s: string) => (s === 'pass' ? T.olive : s === 'warn' ? T.rust : '#e05555');
   const glyph = (s: string) => (s === 'pass' ? '✓' : s === 'warn' ? '!' : '✗');
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {summary && (
-        <div style={{ fontFamily: T.mono, fontSize: 11, color: T.fgDim, marginBottom: 4 }}>
-          <span style={{ color: T.olive }}>{summary.passed} pass</span> · <span style={{ color: T.rust }}>{summary.warned} warn</span> · <span style={{ color: '#e05555' }}>{summary.failed} fail</span>
-        </div>
-      )}
-      {checks.map((c) => (
-        <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '18px 1fr auto', gap: 8, alignItems: 'baseline' }}>
-          <span style={{ color: color(c.status), fontFamily: T.mono, fontWeight: 700 }}>{glyph(c.status)}</span>
-          <div>
-            <span style={{ fontSize: 13, color: T.fg }}>{c.name}</span>
-            <span style={{ marginLeft: 8, fontFamily: T.mono, fontSize: 10, color: T.fgFaint, textTransform: 'uppercase' }}>{c.category}</span>
-            <div style={{ fontSize: 12, color: T.fgDim }}>{c.detail}</div>
+    <details style={{ border: `1px solid ${T.border}`, borderRadius: 4, background: T.panel }}>
+      <summary style={{
+        cursor: 'pointer', padding: '11px 16px', display: 'flex', alignItems: 'center', gap: 12,
+        fontFamily: T.mono, fontSize: 10.5, letterSpacing: '1.2px', textTransform: 'uppercase', color: T.fgDim,
+      }}>
+        <span>Sensemaking checks</span>
+        {summary ? (
+          <span style={{ fontFamily: T.mono, fontSize: 11, textTransform: 'none', letterSpacing: 0 }}>
+            <span style={{ color: T.olive }}>{summary.passed} pass</span>
+            <span style={{ color: T.fgFaint }}> · </span>
+            <span style={{ color: T.rust }}>{summary.warned} warn</span>
+            <span style={{ color: T.fgFaint }}> · </span>
+            <span style={{ color: '#e05555' }}>{summary.failed} fail</span>
+          </span>
+        ) : <span style={{ color: T.fgFaint, textTransform: 'none', letterSpacing: 0 }}>running…</span>}
+      </summary>
+      <div style={{ padding: '4px 16px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {!checks && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>Running checks…</span>}
+        {checks && checks.map((c) => (
+          <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '18px 1fr auto', gap: 8, alignItems: 'baseline' }}>
+            <span style={{ color: color(c.status), fontFamily: T.mono, fontWeight: 700 }}>{glyph(c.status)}</span>
+            <div>
+              <span style={{ fontSize: 13, color: T.fg }}>{c.name}</span>
+              <span style={{ marginLeft: 8, fontFamily: T.mono, fontSize: 10, color: T.fgFaint, textTransform: 'uppercase' }}>{c.category}</span>
+              <div style={{ fontSize: 12, color: T.fgDim }}>{c.detail}</div>
+            </div>
+            {c.offenders.length > 0 && <span style={{ fontFamily: T.mono, fontSize: 10.5, color: color(c.status) }}>{c.offenders.length}</span>}
           </div>
-          {c.offenders.length > 0 && <span style={{ fontFamily: T.mono, fontSize: 10.5, color: color(c.status) }}>{c.offenders.length}</span>}
-        </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// ─── claim type badge ───────────────────────────────────────────
+const TYPE_COLOR: Record<string, string> = { primary: T.teal, secondary: T.blue, peripheral: T.fgFaint };
+function ClaimBadge({ type }: { type?: string }) {
+  const c = TYPE_COLOR[type || ''] || T.fgFaint;
+  return (
+    <span style={{
+      fontFamily: T.mono, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.8px',
+      color: c, border: `1px solid ${c}66`, borderRadius: 3, padding: '2px 8px',
+    }}>{type || 'claim'}</span>
+  );
+}
+
+// ─── one observation + its verbatim fragments ───────────────────
+function ObservationBlock({ obs, quotes }: { obs: ObservationNode; quotes: Array<{ frag: string; quote: string }> }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        {obs.name && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.olive }}>{obs.name}</span>}
+        {obs.knowledge_level && <span style={tagS}>{obs.knowledge_level}</span>}
+        {obs.bio_scale && <span style={tagS}>{obs.bio_scale}</span>}
+      </div>
+      {obs.content && <p style={{ margin: '4px 0 0', fontSize: 13, lineHeight: 1.55, color: T.fg }}>{obs.content}</p>}
+      {quotes.map((q, i) => (
+        <blockquote key={i} style={{
+          margin: '6px 0 0', padding: '2px 0 2px 10px', borderLeft: `2px solid ${T.oliveDim}`,
+          fontSize: 12.5, lineHeight: 1.5, color: T.fgDim, fontStyle: 'italic',
+        }}>
+          “{q.quote}”
+          {q.frag && <span style={{ fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint, fontStyle: 'normal', marginLeft: 6 }}>{q.frag}</span>}
+        </blockquote>
       ))}
     </div>
   );
 }
 
-// ─── small styled table ────────────────────────────────────────
-const thS: React.CSSProperties = {
-  fontFamily: T.mono, fontSize: 10, fontWeight: 600, color: T.fgDim, textAlign: 'left',
-  padding: '5px 9px', border: `1px solid ${T.borderDim}`, textTransform: 'uppercase', letterSpacing: '0.5px',
-  position: 'sticky', top: 0, background: T.bgSunken,
-};
-const tdS: React.CSSProperties = { padding: '4px 9px', border: `1px solid ${T.borderDim}`, color: T.fg, fontSize: 12, verticalAlign: 'top' };
-
-function DataTable({ headers, rows }: { headers: string[]; rows: ReactNode[][] }) {
-  if (!rows.length) return <p style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint, margin: 0 }}>— none —</p>;
+// ─── one KEfED instance: template-design diagram + pivot data table ──
+function InstanceBlock({ inst }: { inst: InstanceDetail }) {
+  const tpl = inst.template_detail;
   return (
-    <div style={{ overflowX: 'auto', maxHeight: 460, overflowY: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr>{headers.map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
-        <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} style={tdS}>{c}</td>)}</tr>)}</tbody>
-      </table>
+    <div style={{ border: `1px solid ${T.borderDim}`, borderRadius: 6, padding: '12px 14px', background: T.bgRaised, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: T.serif, fontSize: 14.5, color: T.fg }}>{inst.name || inst.id}</span>
+        {inst.template?.id && (
+          <Link
+            href={`/scientific-literature/template/${encodeURIComponent(inst.template.id)}`}
+            title={tpl?.definition || 'reusable KEfED experiment design'}
+            style={{ fontFamily: T.mono, fontSize: 10.5, color: T.olive, textDecoration: 'none', whiteSpace: 'nowrap' }}
+          >KEfED template: {inst.template.name || inst.template.id} →</Link>
+        )}
+      </div>
+
+      {tpl?.graph && (tpl.graph.processes || []).length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={subheadS}>KEfED template design</div>
+          <KefedProtocolGraph exp={{ id: tpl.id, name: tpl.name, experiment: tpl.graph }} />
+        </div>
+      )}
+
+      <div style={{ marginTop: 10 }}>
+        <div style={subheadS}>Data table</div>
+        <Spreadsheet tpl={tpl} data={inst.data || []} />
+      </div>
     </div>
   );
 }
 
-const mono = (s: ReactNode) => <code style={{ fontFamily: T.mono, fontSize: 10.5, color: T.teal }}>{s}</code>;
-
-function specLabel(v: OoevvVarBrief): string {
-  const s = v.scale;
-  if (!s) return '—';
-  const vals = s.values?.length ? ` {${s.values.join('/')}}` : '';
-  return `${s.type || '?'}${s.unit ? ` (${s.unit})` : ''}${vals}`;
+// ─── cite chip (cross-paper hinge) ──────────────────────────────
+function CiteChip({ ref }: { ref: InvestigationPaperRef }) {
+  const label = ref.name || ref.id;
+  if (ref.id) {
+    return <Link href={`/scientific-literature/paper/${encodeURIComponent(ref.id)}`}
+      style={{ fontFamily: T.mono, fontSize: 10.5, color: T.teal, textDecoration: 'none' }}>{label}</Link>;
+  }
+  return <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgDim }}>{label}</span>;
 }
 
-// ─── main walkthrough ──────────────────────────────────────────
+// ─── word-boundary prefix match (rhetorical obs name ⊂ datum obs name) ──
+function nameMatches(datumName: string | undefined, obsName: string | undefined): boolean {
+  if (!datumName || !obsName) return false;
+  if (datumName === obsName) return true;
+  if (!datumName.startsWith(obsName)) return false;
+  const next = datumName.charAt(obsName.length);
+  return next === '' || /[^A-Za-z0-9]/.test(next);
+}
+
+// ─── main claim-centric walkthrough ─────────────────────────────
 export function PaperCuration({ data }: { data: PaperCurationDetail }) {
   const b = data.bundle || ({} as BundleDetail);
-  const experiments = b.experiments || [];
+  const claims = b.reported_claims || [];
+  const observations = b.observations || [];
+  const gaps = b.reported_gaps || [];
+  const instances = b.instances || [];
 
-  // aggregate OOEVV vocabulary from the experiments' variables
-  const qualities = new Map<string, { name: string; definition?: string; curie?: string; state?: string; specs: Set<string> }>();
-  const specs = new Set<string>();
-  const varRows: { name: string; role: string; quality: string; spec: string }[] = [];
-  for (const e of experiments) {
-    for (const p of e.experiment?.processes || []) {
-      for (const v of [...(p.parameters || []), ...(p.measurements || [])]) {
-        const sl = specLabel(v);
-        const qn = v.quality?.quality;
-        if (qn) {
-          if (!qualities.has(qn)) qualities.set(qn, { name: qn, definition: v.quality?.definition, curie: v.quality?.curie, state: v.quality?.grounding_state, specs: new Set() });
-          qualities.get(qn)!.specs.add(sl);
-        }
-        if (v.scale) specs.add(sl);
-        varRows.push({ name: v.name || '?', role: v.role || '?', quality: qn || '—', spec: sl });
-      }
-    }
+  const obsById = new Map(observations.map((o) => [o.id, o] as const));
+
+  // claim -> observation ids (scilit-claim-observation edges)
+  const claimObsIds = new Map<string, string[]>();
+  for (const co of data.claim_observations || []) {
+    const arr = claimObsIds.get(co.claim) || [];
+    arr.push(co.observation);
+    claimObsIds.set(co.claim, arr);
   }
 
-  const sections: { id: string; title: string; body: ReactNode }[] = [];
-
-  // ⓪ sensemaking linter
-  sections.push({ id: 'checks', title: 'Sensemaking checks', body: <SensemakingChecksPanel paperId={data.paper?.id} /> });
-
-  // ① overview
-  sections.push({ id: 'overview', title: 'The five layers', body: <Mermaid chart={layerOverviewMermaid(data)} /> });
-
-  // ② raw
-  sections.push({
-    id: 'raw', title: '1 · Raw layer — paper, full text & fragments',
-    body: (
-      <>
-        <DataTable headers={['attribute', 'value']} rows={[
-          ['id', mono(data.paper?.id)],
-          ['name', data.paper?.name],
-          ['doi', data.paper?.doi ? <a href={`https://doi.org/${data.paper.doi}`} target="_blank" rel="noreferrer" style={{ color: T.teal }}>{data.paper.doi}</a> : '—'],
-          ['year', data.paper?.year ?? '—'],
-          ['acquisition-status', data.paper?.acquisition_status ?? '—'],
-          ['full-text artifact', data.fulltext ? mono(data.fulltext.id) : '— none —'],
-        ]} />
-        {data.fragments && data.fragments.length > 0 && (
-          <DataTable headers={['frag', 'kind', 'offset', 'verbatim quote']} rows={data.fragments.map((f) => [
-            mono(f.id), f.kind || '—', f.offset != null ? `@${f.offset}` : '—',
-            <span style={{ color: T.fgDim }}>{f.content}</span>,
-          ])} />
-        )}
-        <Mermaid chart={rawLayerMermaid(data)} />
-      </>
-    ),
-  });
-
-  // ③ investigation spine
-  sections.push({ id: 'spine', title: '2 · Investigation spine', body: <Mermaid chart={investigationSpineMermaid(data)} /> });
-
-  // ④ bundle hub
-  sections.push({
-    id: 'bundle', title: '3 · The sensemaking bundle (the hub)',
-    body: <DataTable headers={['relation', 'count', 'meaning']} rows={[
-      ['sensemaking-observation', (b.observations || []).length, 'measurements-in-context'],
-      ['sensemaking-reported-claim', (b.reported_claims || []).length, 'claims the paper asserts'],
-      ['sensemaking-reported-gap', (b.reported_gaps || []).length, 'gaps the paper states'],
-      ['sensemaking-experiment', experiments.length + (b.instances || []).length, 'KEfED models + data instances'],
-    ].map((r) => [mono(r[0]), r[1], r[2]])} />,
-  });
-
-  // ⑤ rhetorical
-  const obsById = new Map((b.observations || []).map((o) => [o.id, o]));
-  const derivByNote = new Map<string, string[]>();
+  // observation id -> verbatim fragment quotes (alh-derivation: note == observation id)
+  const quotesByObs = new Map<string, Array<{ frag: string; quote: string }>>();
   for (const dv of data.derivations || []) {
-    if (!derivByNote.has(dv.note)) derivByNote.set(dv.note, []);
-    if (dv.quote) derivByNote.get(dv.note)!.push(dv.quote);
+    if (!dv.quote) continue;
+    const arr = quotesByObs.get(dv.note) || [];
+    arr.push({ frag: dv.frag, quote: dv.quote });
+    quotesByObs.set(dv.note, arr);
   }
-  sections.push({
-    id: 'rhetorical', title: '4 · Rhetorical layer — claims, gaps, observations',
-    body: (
-      <>
-        <h4 style={h4S}>Observations ({(b.observations || []).length})</h4>
-        <DataTable headers={['id', 'name', 'knowledge-level', 'bio-scale', 'statement']} rows={(b.observations || []).map((o) => [
-          mono(o.id), o.name || '—', o.knowledge_level || '—', o.bio_scale || '—', <span style={{ color: T.fgDim }}>{o.content}</span>,
-        ])} />
-        <h4 style={h4S}>Claims ({(b.reported_claims || []).length})</h4>
-        <DataTable headers={['id', 'type', 'statement', 'cites']} rows={(b.reported_claims || []).map((c) => [
-          mono(c.id), c.type || '—', <span style={{ color: T.fgDim }}>{c.statement}</span>,
-          (c.cites || []).length ? (c.cites || []).map((x) => x.name || x.id).join('; ') : '—',
-        ])} />
-        <h4 style={h4S}>Gaps ({(b.reported_gaps || []).length})</h4>
-        <DataTable headers={['id', 'statement', 'knowledge-goal']} rows={(b.reported_gaps || []).map((g) => [
-          mono(g.id), <span style={{ color: T.fgDim }}>{g.name}</span>, g.goal || '—',
-        ])} />
-        <h4 style={h4S}>How claims stand on observations</h4>
-        {data.claim_observations && data.claim_observations.length > 0
-          ? <Mermaid chart={claimObservationMermaid(data)} />
-          : <p style={emptyS}>— no claim→observation links —</p>}
-        <h4 style={h4S}>Span-anchoring — notes → verbatim fragments ({(data.derivations || []).length} edges)</h4>
-        <DataTable headers={['note', 'anchored verbatim quote(s)']} rows={Array.from(derivByNote.entries()).map(([note, quotes]) => [
-          mono(note), <span style={{ color: T.fgDim }}>{quotes.join('  ·  ')}</span>,
-        ])} />
-      </>
-    ),
-  });
 
-  // ⑤ KEfED experiments
-  sections.push({
-    id: 'kefed', title: '5 · KEfED experiments as node graphs',
-    body: (
-      <>
-        {experiments.map((e) => (
-          <div key={e.id} style={{ marginBottom: 14 }}>
-            <div style={{ fontFamily: T.serif, fontSize: 15, color: T.fg, margin: '6px 0' }}>{e.name || e.id} {mono(e.id)}</div>
-            <Mermaid chart={kefedModelMermaid(e)} caption={signatureCaption(data.signatures?.[e.id])} />
+  // heuristic grouping: an instance belongs to a claim when any of its datum-row observation
+  // names shares a name-prefix with one of the claim's rhetorical observations.
+  const matchedInstanceIds = new Set<string>();
+  const instancesForClaim = (claimId: string): InstanceDetail[] => {
+    const names = (claimObsIds.get(claimId) || [])
+      .map((id) => obsById.get(id)?.name)
+      .filter(Boolean) as string[];
+    if (!names.length) return [];
+    const hits = instances.filter((inst) =>
+      (inst.data || []).some((r) => names.some((n) => nameMatches(r.observation?.name, n)))
+    );
+    hits.forEach((i) => matchedInstanceIds.add(i.id));
+    return hits;
+  };
+
+  // pre-compute so matchedInstanceIds is populated before the leftover bucket is derived
+  const claimBlocks = claims.map((c) => ({
+    claim: c,
+    obs: (claimObsIds.get(c.id) || []).map((id) => obsById.get(id)).filter(Boolean) as ObservationNode[],
+    insts: instancesForClaim(c.id),
+  }));
+  const leftover = instances.filter((i) => !matchedInstanceIds.has(i.id));
+
+  // TOC entries
+  const toc: Array<{ id: string; label: string }> = claimBlocks.map((cb, i) => ({
+    id: `claim-${i}`, label: `Claim ${i + 1}`,
+  }));
+  if (leftover.length) toc.push({ id: 'additional', label: 'Additional models' });
+  if (gaps.length) toc.push({ id: 'gaps', label: 'Gaps' });
+
+  const claimSection = (cb: typeof claimBlocks[number], i: number): ReactNode => (
+    <section key={cb.claim.id} id={`claim-${i}`} style={{ scrollMarginTop: 60 }}>
+      <Panel title={`Claim ${i + 1}`} action={<ClaimBadge type={cb.claim.type} />}>
+        <p style={{ margin: 0, fontFamily: T.serif, fontSize: 16, lineHeight: 1.55, color: T.fg }}>{cb.claim.statement}</p>
+        {cb.claim.cites && cb.claim.cites.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+            <span style={{ fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint, textTransform: 'uppercase' }}>cites</span>
+            {cb.claim.cites.map((c) => <CiteChip key={c.id} ref={c} />)}
           </div>
-        ))}
-      </>
-    ),
-  });
+        )}
 
-  // ⑧ OOEVV vocabulary
-  sections.push({
-    id: 'ooevv', title: '6 · OOEVV vocabulary — qualities, value-specs, variables',
-    body: (
-      <>
-        <h4 style={h4S}>Qualities ({qualities.size})</h4>
-        <DataTable headers={['quality', 'grounding', '# specs', 'definition']} rows={Array.from(qualities.values()).map((q) => [
-          q.name,
-          q.curie ? mono(q.curie) : <span style={{ color: T.fgFaint }}>{q.state || 'ungrounded'}</span>,
-          q.specs.size, <span style={{ color: T.fgDim }}>{q.definition || '—'}</span>,
-        ])} />
-        <h4 style={h4S}>Value-specifications ({specs.size})</h4>
-        <DataTable headers={['value-spec']} rows={Array.from(specs).map((s) => [s])} />
-        <h4 style={h4S}>Variable inventory ({varRows.length})</h4>
-        <DataTable headers={['variable', 'role', 'quality', 'value-spec']} rows={varRows.map((v) => [v.name, v.role, v.quality, v.spec])} />
-      </>
-    ),
-  });
+        <div>
+          <div style={subheadS}>Observations ({cb.obs.length})</div>
+          {cb.obs.length
+            ? cb.obs.map((o) => <ObservationBlock key={o.id} obs={o} quotes={quotesByObs.get(o.id) || []} />)
+            : <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>— none linked —</span>}
+        </div>
 
-  // ⑨ data table
-  if ((b.instances || []).length) {
-    sections.push({
-      id: 'data', title: '7 · Template, instance & the data table',
-      body: (
-        <>
-          {(b.instances || []).map((inst) => (
-            <div key={inst.id} style={{ marginBottom: 12 }}>
-              <div style={{ fontFamily: T.mono, fontSize: 11, color: T.fgDim, marginBottom: 6 }}>
-                {inst.name || inst.id} {inst.template?.name ? `· template: ${inst.template.name}` : ''}
-              </div>
-              {(inst.data || []).map((row) => (
-                <DataTable key={row.id} headers={['variable', 'value', 'role']} rows={(row.cells || []).map((c) => [
-                  c.name || c.variable, <b key="v">{c.value}</b>, c.role || '—',
-                ])} />
-              ))}
-            </div>
-          ))}
-        </>
-      ),
-    });
-  }
-
-  // ⑩ vertical slice
-  sections.push({ id: 'slice', title: '8 · The full vertical slice', body: <Mermaid chart={verticalSliceMermaid(data)} /> });
-
-  // ⑪ appendix — entity inventory + id registry
-  sections.push({
-    id: 'appendix', title: '9 · Appendix — inventory & id registry',
-    body: (
-      <>
-        <h4 style={h4S}>Entity inventory</h4>
-        <DataTable headers={['entity type', 'count']} rows={[
-          ['scilit-sentence / -section (fragments)', (data.fragments || []).length],
-          ['scilit-observation', (b.observations || []).length],
-          ['scilit-claim', (b.reported_claims || []).length],
-          ['scilit-gap', (b.reported_gaps || []).length],
-          ['kefed-model (experiments)', experiments.length],
-          ['kefed-instance', (b.instances || []).length],
-          ['ooevv-quality', qualities.size],
-          ['ooevv-variable', varRows.length],
-        ].map((r) => [mono(r[0]), r[1]])} />
-        <h4 style={h4S}>Id registry</h4>
-        <DataTable headers={['role', 'id']} rows={[
-          ['investigation', mono(data.spine?.id)],
-          ['bundle', mono(data.bundle_id)],
-          ['focal paper', mono(data.paper?.id)],
-          ...experiments.map((e) => [`experiment: ${(e.name || '').slice(0, 30)}`, mono(e.id)] as ReactNode[]),
-        ]} />
-      </>
-    ),
-  });
+        {cb.insts.length > 0 && (
+          <div>
+            <div style={subheadS}>Evidence — KEfED models &amp; data ({cb.insts.length})</div>
+            {cb.insts.map((inst) => <InstanceBlock key={inst.id} inst={inst} />)}
+          </div>
+        )}
+      </Panel>
+    </section>
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* sticky TOC */}
-      <nav style={{
-        position: 'sticky', top: 0, zIndex: 5, background: T.panelHi, backdropFilter: 'blur(6px)',
-        border: `1px solid ${T.border}`, borderRadius: 4, padding: '10px 14px',
-        display: 'flex', flexWrap: 'wrap', gap: 10,
-      }}>
-        <span style={{ fontFamily: T.mono, fontSize: 10, letterSpacing: '1.2px', textTransform: 'uppercase', color: T.fgDim }}>Curation walkthrough:</span>
-        {sections.map((s) => (
-          <a key={s.id} href={`#${s.id}`} style={{ fontFamily: T.mono, fontSize: 10.5, color: T.teal, textDecoration: 'none' }}>{s.title.split('·').pop()?.trim()}</a>
-        ))}
-      </nav>
-      {sections.map((s) => (
-        <section key={s.id} id={s.id} style={{ scrollMarginTop: 60 }}>
-          <Panel title={s.title}>{s.body}</Panel>
+      <SensemakingChecksBox paperId={data.paper?.id} />
+
+      {/* sticky claim TOC */}
+      {toc.length > 1 && (
+        <nav style={{
+          position: 'sticky', top: 0, zIndex: 5, background: T.panelHi, backdropFilter: 'blur(6px)',
+          border: `1px solid ${T.border}`, borderRadius: 4, padding: '10px 14px',
+          display: 'flex', flexWrap: 'wrap', gap: 12,
+        }}>
+          <span style={{ fontFamily: T.mono, fontSize: 10, letterSpacing: '1.2px', textTransform: 'uppercase', color: T.fgDim }}>Claims:</span>
+          {toc.map((t) => (
+            <a key={t.id} href={`#${t.id}`} style={{ fontFamily: T.mono, fontSize: 10.5, color: T.teal, textDecoration: 'none' }}>{t.label}</a>
+          ))}
+        </nav>
+      )}
+
+      {claimBlocks.map(claimSection)}
+
+      {/* instances that matched no claim — never silently dropped */}
+      {leftover.length > 0 && (
+        <section id="additional" style={{ scrollMarginTop: 60 }}>
+          <Panel title={`Additional evidence models (${leftover.length})`}>
+            <p style={{ margin: '0 0 8px', fontSize: 12.5, color: T.fgDim }}>
+              KEfED instances not matched to a specific claim by observation name.
+            </p>
+            {leftover.map((inst) => <InstanceBlock key={inst.id} inst={inst} />)}
+          </Panel>
         </section>
-      ))}
+      )}
+
+      {/* stated gaps (open questions the paper names) */}
+      {gaps.length > 0 && (
+        <section id="gaps" style={{ scrollMarginTop: 60 }}>
+          <Panel title={`Gaps (${gaps.length})`}>
+            {gaps.map((g) => (
+              <div key={g.id} style={{ marginBottom: 8 }}>
+                <p style={{ margin: 0, fontSize: 13, color: T.fg }}>{g.name}</p>
+                {g.goal && <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgFaint }}>{g.goal}</span>}
+              </div>
+            ))}
+          </Panel>
+        </section>
+      )}
     </div>
   );
 }
-
-const h4S: React.CSSProperties = { fontFamily: T.mono, fontSize: 11, fontWeight: 600, color: T.fgDim, textTransform: 'uppercase', letterSpacing: '0.6px', margin: '10px 0 4px' };
-const emptyS: React.CSSProperties = { fontFamily: T.mono, fontSize: 11, color: T.fgFaint, margin: 0 };

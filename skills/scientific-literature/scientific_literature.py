@@ -54,7 +54,13 @@ except ImportError:
     print("Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.8.0'",
           file=sys.stderr)
 
-from paper_identity import paper_identity
+# paper_identity is a sibling module. Running this file as a script puts its dir on sys.path
+# automatically, but the warm gateway loads it via importlib (which does not), so add it here.
+try:
+    from paper_identity import paper_identity
+except ModuleNotFoundError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from paper_identity import paper_identity
 
 try:
     from skillful_alhazen.utils.skill_helpers import escape_string, generate_id, get_timestamp
@@ -1475,7 +1481,9 @@ def cmd_show(args):
                 f'match $p isa scilit-paper, has id "{args.id}"; '
                 f'fetch {{ "id": $p.id, "name": $p.name, "abstract-text": $p.abstract-text, '
                 f'"doi": $p.scilit-doi, "pmid": $p.scilit-pmid, "year": $p.scilit-publication-year, '
-                f'"journal": $p.scilit-journal-name, "source-uri": $p.source-uri }};'
+                f'"journal": $p.scilit-journal-name, "volume": $p.scilit-journal-volume, '
+                f'"issue": $p.scilit-journal-issue, "pages": $p.scilit-page-range, '
+                f'"authors": $p.scilit-author-list, "source-uri": $p.source-uri }};'
             ).resolve())
 
             if not result:
@@ -3469,6 +3477,8 @@ def cmd_show_paper_curation(args):
                 f'match $p isa scilit-paper, has id "{escape_string(pid)}"; '
                 f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "pmid": $p.scilit-pmid, '
                 f'"year": $p.scilit-publication-year, "journal": $p.scilit-journal-name, '
+                f'"volume": $p.scilit-journal-volume, "issue": $p.scilit-journal-issue, '
+                f'"pages": $p.scilit-page-range, "authors": $p.scilit-author-list, '
                 f'"acquisition_status": $p.scilit-acquisition-status }};').resolve())
             if not head:
                 print(json.dumps({"success": False, "error": "Paper not found"})); sys.exit(1)
@@ -4371,17 +4381,22 @@ def cmd_ground_bundle(args):
                         onts.append(o)
             thr = float(policy.get("confidence_threshold", 0.5))
             reground = bool(getattr(args, "reground", False))
-            gfilter_v = "" if reground else "not { $v has scilit-grounding-state $g; }"
-            gfilter_e = "" if reground else "not { $e has scilit-grounding-state $g; }"
+            gfilter_v = "" if reground else "not { $v has scilit-grounding-state $g; };"
+            gfilter_e = "" if reground else "not { $e has scilit-grounding-state $g; };"
             # collect targets: (typelabel, id, name)
-            # Variables: bundle -> scilit-sensemaking-experiment -> kefed-model
-            #            -> kefed-model-element -> ooevv-variable
+            # Variables: bundle -> scilit-sensemaking-experiment -> (kefed-model directly, OR
+            #            kefed-instance -> kefed-instance-of -> kefed-model) -> kefed-model-element
+            #            -> kefed-model-node -> kefed-node-variable -> ooevv-variable.
+            # (Templates-first path: the bundle's experiment is a kefed-instance whose variables
+            # live on the template model's nodes; the add-experiment path links a kefed-model directly.)
             targets = {}
             var_rows = list(tx.query(
                 f'match $b isa scilit-paper-sensemaking, has id "{bid}"; '
-                f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment; '
-                f'$m isa kefed-model; '
-                f'(model: $m, element: $v) isa kefed-model-element; '
+                f'(sensemaking: $b, experiment: $x) isa scilit-sensemaking-experiment; '
+                f'{{ $x isa kefed-model; (model: $x, element: $n) isa kefed-model-element; }} '
+                f'or {{ $x isa kefed-instance; (instance: $x, model: $mm) isa kefed-instance-of; '
+                f'(model: $mm, element: $n) isa kefed-model-element; }}; '
+                f'(node: $n, variable: $v) isa kefed-node-variable; '
                 f'$v isa ooevv-variable, has name $nm; '
                 f'{gfilter_v} '
                 f'fetch {{ "id": $v.id, "name": $nm }};').resolve())
@@ -5195,6 +5210,41 @@ def cmd_set_node_definition(args):
     print(json.dumps({"success": True, "node": args.node, "def": did}))
 
 
+def cmd_set_citation(args):
+    """Set bibliographic citation fields on a scilit-paper: authors (semicolon-delimited,
+    order-preserving), journal volume/issue, and page range. Each is optional; only the ones
+    provided are replaced (delete-then-insert). Used to backfill a full academic citation from
+    an external source (e.g. PubMed) for the dashboard's citation header."""
+    fields = {
+        "scilit-author-list": getattr(args, "authors", None),
+        "scilit-journal-name": getattr(args, "journal", None),
+        "scilit-journal-volume": getattr(args, "volume", None),
+        "scilit-journal-issue": getattr(args, "issue", None),
+        "scilit-page-range": getattr(args, "pages", None),
+    }
+    provided = {attr: val for attr, val in fields.items() if val is not None}
+    if not provided:
+        print(json.dumps({"success": False, "error": "No citation fields provided"})); sys.exit(1)
+    pe = escape_string(args.id)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            exists = list(tx.query(
+                f'match $p isa scilit-paper, has id "{pe}"; fetch {{ "id": $p.id }};').resolve())
+            if not exists:
+                print(json.dumps({"success": False, "error": "Paper not found"})); sys.exit(1)
+            for attr, val in provided.items():
+                has = list(tx.query(
+                    f'match $p isa scilit-paper, has id "{pe}", has {attr} $x; '
+                    f'fetch {{ "x": $x }};').resolve())
+                if has:
+                    tx.query(f'match $p isa scilit-paper, has id "{pe}", has {attr} $x; '
+                             f'delete has $x of $p;').resolve()
+                tx.query(f'match $p isa scilit-paper, has id "{pe}"; '
+                         f'insert $p has {attr} "{escape_string(str(val))}";').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "id": args.id, "set": list(provided.keys())}))
+
+
 # =============================================================================
 # KEfED template / instance / data verbs (curation by recognize-reuse-fill)
 # =============================================================================
@@ -5673,6 +5723,15 @@ def main():
     # show
     p = subparsers.add_parser("show", help="Show a paper for sensemaking")
     p.add_argument("--id", required=True, help="Paper ID (scilit-paper-...)")
+
+    p = subparsers.add_parser("set-citation",
+        help="Set bibliographic citation fields (authors/volume/issue/pages) on a paper")
+    p.add_argument("--id", required=True, help="Paper ID (scilit-paper-...)")
+    p.add_argument("--authors", help="Author list, semicolon-delimited and order-preserving (e.g. 'Rong Y; Tang J')")
+    p.add_argument("--journal", help="Journal name")
+    p.add_argument("--volume", help="Journal volume")
+    p.add_argument("--issue", help="Journal issue")
+    p.add_argument("--pages", help="Page range (e.g. '1201-1217')")
 
     # list
     p = subparsers.add_parser("list", help="List papers in the knowledge graph")
@@ -6162,6 +6221,7 @@ def main():
         "parse-pdf-blocks": cmd_parse_pdf_blocks,
         "extract-floats": cmd_extract_floats,
         "show": cmd_show,
+        "set-citation": cmd_set_citation,
         "list": cmd_list,
         "list-collections": cmd_list_collections,
         "list-by-keyword": cmd_list_by_keyword,

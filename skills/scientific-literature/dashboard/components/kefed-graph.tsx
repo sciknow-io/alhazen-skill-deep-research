@@ -5,8 +5,14 @@
 // labelled inputs feeding their step; a measurement is shown as the terminal data-grid; the
 // generic quality + specificity (parameter -> entity) are made explicit. Hierarchy is nested.
 
+import Link from 'next/link';
 import { T } from './tokens';
 import type { ExperimentGraph, OoevvProcess, OoevvVarBrief } from '@/lib/scientific-literature';
+
+/** Deep-link an OOEVV vocabulary term (quality / entity) to the ontology search. */
+function ooevvHref(term: string): string {
+  return `/scientific-literature/ontology?q=${encodeURIComponent(term)}`;
+}
 
 const TYPE_STYLE: Record<string, { bg: string; border: string; radius: number; label: string }> = {
   'material-processing': { bg: 'rgba(91,138,184,0.10)', border: T.blue, radius: 6, label: 'material' },
@@ -22,7 +28,8 @@ function ParamInput({ p }: { p: OoevvVarBrief }) {
         <span style={{ color: T.fg }} title={p.quality?.definition || ''}>{p.name}</span>
         <span style={{ color: T.fgFaint }}>{vals}</span>
         {p.target_entity && (
-          <span style={{ color: T.rust }} title={p.target_entity.definition || ''}> → {p.target_entity.name}</span>
+          <Link href={ooevvHref(p.target_entity.name || '')} title={p.target_entity.definition || 'OOEVV entity — open in ontology'}
+            style={{ color: T.rust, textDecoration: 'none' }}> → {p.target_entity.name}</Link>
         )}
       </div>
       {/* the little stacked "value bar" from the KEfED figures */}
@@ -48,7 +55,9 @@ function MeasurementGrid({ m }: { m: OoevvVarBrief }) {
       <div style={{ fontFamily: T.mono, fontSize: 11 }}>
         <div style={{ color: T.fg }}>{m.name}</div>
         <div style={{ color: T.teal }} title={m.quality?.definition || ''}>
-          [{m.quality?.quality || '?'}]{m.scale?.type ? ` · ${m.scale.type}${m.scale.unit ? ` (${m.scale.unit})` : ''}` : ''}
+          [{m.quality?.quality
+            ? <Link href={ooevvHref(m.quality.quality)} style={{ color: T.teal, textDecoration: 'none' }} title="OOEVV quality — open in ontology">{m.quality.quality}</Link>
+            : '?'}]{m.scale?.type ? ` · ${m.scale.type}${m.scale.unit ? ` (${m.scale.unit})` : ''}` : ''}
         </div>
       </div>
     </div>

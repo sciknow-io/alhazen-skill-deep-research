@@ -75,6 +75,10 @@ export interface Paper {
   'abstract-text'?: string;
   pmid?: string;
   journal?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
+  authors?: string;   // semicolon-delimited, order-preserving
   'source-uri'?: string;
 }
 

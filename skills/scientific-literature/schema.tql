@@ -33,6 +33,9 @@ attribute scilit-journal-issue, value string;
 attribute scilit-page-range, value string;
 attribute scilit-publication-year, value integer;
 attribute scilit-keyword, value string;
+# Ordered author list, semicolon-delimited ("Last FM; Last FM; ...") — order-preserving so the
+# dashboard can render a standard academic citation. Single string keeps writes/citations simple.
+attribute scilit-author-list, value string;
 
 # Citation-target registry (acquisition tracking for cited references)
 attribute scilit-acquisition-status, value string;   # needed | held | ingested | sensemade | rhetorical-done
@@ -126,6 +129,7 @@ entity scilit-paper sub alh-domain-thing,
     owns scilit-journal-volume,
     owns scilit-journal-issue,
     owns scilit-page-range,
+    owns scilit-author-list,
     owns scilit-publication-year,
     owns scilit-keyword @card(0..),
     owns scilit-acquisition-status,

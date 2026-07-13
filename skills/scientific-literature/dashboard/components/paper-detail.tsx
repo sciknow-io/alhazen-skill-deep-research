@@ -2,11 +2,61 @@
 
 import { useState, useEffect } from 'react';
 import { T, FACETS, facetColor } from './tokens';
-import { BackNav, HeaderStrip, Panel, FacetBadge, MarkdownContent } from './atoms';
+import { BackNav, TypeChip, Panel, FacetBadge, MarkdownContent } from './atoms';
 import { Shell, Loading, ErrorBox } from './corpus-detail';
 import { PaperCuration } from './paper-curation';
 import { withDb } from './db';
-import type { PaperDetail as PaperDetailData, PaperCurationDetail } from '@/lib/scientific-literature';
+import type { PaperDetail as PaperDetailData, PaperCurationDetail, Paper } from '@/lib/scientific-literature';
+
+/** Standard academic citation header: Authors (year). Title. Journal Vol(Issue):Pages. doi. */
+function CitationHeader({ paper }: { paper: Paper }) {
+  const authors = paper.authors ? paper.authors.split(';').map((s) => s.trim()).filter(Boolean) : [];
+  const authorStr = authors.length
+    ? (authors.length > 6 ? `${authors.slice(0, 6).join(', ')}, et al.` : authors.join(', '))
+    : null;
+  // journal locator: "Vol(Issue):Pages", degrading gracefully as pieces are missing
+  const locator = [
+    paper.volume ? `${paper.volume}${paper.issue ? `(${paper.issue})` : ''}` : '',
+    paper.pages || '',
+  ].filter(Boolean).join(':');
+
+  return (
+    <header style={{
+      background: T.bgRaised, border: `1px solid ${T.border}`, borderRadius: 4,
+      padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <TypeChip short="PAPER" color={T.blue} icon="doc" />
+        {paper.pmid && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>PMID {paper.pmid}</span>}
+      </div>
+
+      {authorStr && (
+        <div style={{ fontSize: 13.5, color: T.fgDim, lineHeight: 1.5 }}>
+          {authorStr}{paper.year ? ` (${paper.year})` : ''}
+        </div>
+      )}
+
+      <h1 style={{
+        margin: 0, fontFamily: T.serif, fontSize: 26, lineHeight: 1.2, fontWeight: 400,
+        color: T.fg, letterSpacing: '-0.3px',
+      }}>{paper.name || paper.id}</h1>
+
+      {(paper.journal || locator || (!authorStr && paper.year)) && (
+        <div style={{ fontSize: 13, color: T.fgDim }}>
+          {paper.journal && <span style={{ fontStyle: 'italic' }}>{paper.journal}</span>}
+          {locator && <span> {locator}</span>}
+          {!authorStr && paper.year ? <span> ({paper.year})</span> : null}
+        </div>
+      )}
+
+      {paper.doi && (
+        <a href={`https://doi.org/${paper.doi}`} target="_blank" rel="noopener noreferrer"
+          style={{ fontFamily: T.mono, fontSize: 12, color: T.teal, textDecoration: 'underline', textUnderlineOffset: 2 }}
+        >doi:{paper.doi}</a>
+      )}
+    </header>
+  );
+}
 
 /** Split a "<facet>:<value>" keyword into [facet, value] when facet is one of the 8. */
 function parseFacetTags(keywords: string[]): Array<{ facet: string; value: string }> {
@@ -45,7 +95,6 @@ export function PaperDetail({ id }: { id: string }) {
 
   const paper = data?.paper;
   const facetTags = data ? parseFacetTags(data.keywords || []) : [];
-  const doi = paper?.doi;
 
   return (
     <Shell>
@@ -54,16 +103,7 @@ export function PaperDetail({ id }: { id: string }) {
       {error && <ErrorBox message={error} />}
       {paper && (
         <>
-          <HeaderStrip
-            typeChip={{ short: 'PAPER', color: T.blue, icon: 'doc' }}
-            title={paper.name || paper.id}
-            kvPairs={[
-              { label: 'year', value: paper.year },
-              { label: 'journal', value: paper.journal },
-              { label: 'pmid', value: paper.pmid },
-              { label: 'doi', value: doi },
-            ]}
-          />
+          <CitationHeader paper={paper} />
 
           {facetTags.length > 0 && (
             <Panel title="Facets">
@@ -73,15 +113,6 @@ export function PaperDetail({ id }: { id: string }) {
                 ))}
               </div>
             </Panel>
-          )}
-
-          {doi && (
-            <a
-              href={`https://doi.org/${doi}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ fontFamily: T.mono, fontSize: 12, color: T.teal, textDecoration: 'underline' }}
-            >https://doi.org/{doi}</a>
           )}
 
           {paper['abstract-text'] && (
