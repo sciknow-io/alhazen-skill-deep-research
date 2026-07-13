@@ -182,6 +182,33 @@ def find_float_regions(doc, stats, blocks) -> list[Region]:
     return regions
 
 
+def _seed_table_regions(doc, stats, blocks, regions):
+    """Borderless/ruled tables carry little graphical content, so `find_float_regions`
+    (raster/vector negative-space) misses them entirely — the Table-N caption then
+    steals an adjacent FIGURE's region, cascading the pairing and dropping a real figure.
+    Seed an explicit is_table Region from PyMuPDF `find_tables` on each page that carries
+    a `table_caption` anchor (and its neighbours), so the table gets its own region and
+    figure detection is left untouched (find_tables is scoped to caption pages only)."""
+    A_by_page = {}
+    cap_pages = {b.page for b in blocks if b.type == "table_caption"}
+    seed_pages = set()
+    for p in cap_pages:
+        seed_pages.update((p - 1, p, p + 1))
+    for pno in sorted(pp for pp in seed_pages if 0 <= pp < doc.page_count):
+        page = doc[pno]
+        ps = stats.pages.get(pno)
+        A = page.rect.width * page.rect.height
+        for t in _find_tables(page):
+            rect = tuple(t.bbox)
+            if _area(rect) <= 0:
+                continue
+            # skip if an existing region already covers this table area
+            if any(r.page == pno and _inter(r.rect, rect) > 0.5 * _area(rect) for r in regions):
+                continue
+            regions.append(Region(page=pno, rect=rect, column=_column_of(rect, ps),
+                                   is_table=True, area_frac=(_area(rect) / A if A else 0.0)))
+
+
 def _caption_anchors(blocks):
     out = []
     for b in blocks:
@@ -271,6 +298,7 @@ def extract_floats(pdf_path: str):
     stats = plp.compute_doc_stats(blocks, n)
     plp.classify_blocks(blocks, stats, n)
     regions = find_float_regions(doc, stats, blocks)
+    _seed_table_regions(doc, stats, blocks, regions)
     floats = associate(regions, blocks, stats)
     # fill table rows for paired tables
     for f in floats:

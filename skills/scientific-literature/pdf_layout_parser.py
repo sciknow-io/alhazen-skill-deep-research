@@ -112,6 +112,7 @@ class PageStats:
     content_x1: float
     content_y1: float
     column_mid: float
+    body_x0: float = 0.0  # left edge of the main text column (excludes left marginalia)
 
 
 @dataclass
@@ -216,18 +217,46 @@ def compute_doc_stats(blocks: list[Block], n_pages: int) -> DocStats:
         frame_blocks = [b for b in page_blocks if b.width > 0.15 * (b.y1 - b.y0) or b.width > 20]
         if not frame_blocks:
             frame_blocks = page_blocks
-        x0 = min(b.x0 for b in frame_blocks)
-        y0 = min(b.y0 for b in frame_blocks)
-        x1 = max(b.x1 for b in frame_blocks)
-        y1 = max(b.y1 for b in frame_blocks)
+        # Left edge of the MAIN text column = modal left-edge of real paragraph
+        # blocks (n_chars>80). A journal metadata sidebar/gutter is narrow and
+        # short, so it never dominates this mode; body prose does. Blocks whose
+        # right edge sits entirely left of this (a left marginalia column) are
+        # excluded from the frame so column_mid/content_x0 describe the article
+        # body, not the sidebar — the fix that de-skews page-1 reading order.
+        para = [round(b.x0) for b in frame_blocks if b.n_chars > 80]
+        body_x0 = statistics.mode(para) if para else min(b.x0 for b in frame_blocks)
+        main_blocks = [b for b in frame_blocks if b.x1 >= body_x0 - 10]
+        if not main_blocks:
+            main_blocks = frame_blocks
+        x0 = min(b.x0 for b in main_blocks)
+        y0 = min(b.y0 for b in main_blocks)
+        x1 = max(b.x1 for b in main_blocks)
+        y1 = max(b.y1 for b in main_blocks)
         pages[p] = PageStats(
             width=0, height=0,  # filled by caller if needed
             content_x0=x0, content_y0=y0, content_x1=x1, content_y1=y1,
-            column_mid=(x0 + x1) / 2,
+            column_mid=(x0 + x1) / 2, body_x0=body_x0,
         )
     return DocStats(body_size=body_size, body_font=body_font,
                      second_size=second_size, second_font=second_font,
                      line_height=line_height, pages=pages)
+
+
+def _is_noise(text: str) -> bool:
+    """Decorative/junk block that should never enter the body flow: control-char
+    residue, a single glyph-token repeated (the 'Check for updates' ORCID dot run
+    `a1111111111 a1111111111 …`), or a short block that is mostly punctuation/symbols.
+    Conservative by design — real prose, numbers, and formulae are alphanumeric-rich."""
+    t = text.strip()
+    if not t:
+        return True
+    if any(ord(c) < 9 for c in t):  # control chars (\x00-\x08)
+        return True
+    toks = t.split()
+    if len(toks) >= 4 and len(set(toks)) == 1:
+        return True
+    sym = sum(not (c.isalnum() or c.isspace()) for c in t)
+    return len(t) >= 4 and sym / len(t) > 0.6
 
 
 def _section_label(text: str) -> str | None:
@@ -267,16 +296,26 @@ def classify_blocks(blocks: list[Block], stats: DocStats, n_pages: int) -> None:
                 and b.size < stats.body_size - 0.4):
             b.type = "header" if is_top else "footer"
 
+        elif _is_noise(b.text):
+            b.type = "noise"
+
+        # Journal metadata sidebar / left gutter (Citation, Editor, Received,
+        # Copyright, Funding, ORCID dots, "Check for updates", correspondence
+        # email...). PRIMARY signal is geometry: on the first pages, a block
+        # whose right edge sits entirely left of the main body column. Gated to
+        # early pages + left-of-column so interior body text (which also starts
+        # at the left margin, and two-column left columns) is never caught.
+        elif (b.page <= 1 and ps is not None and ps.body_x0 and b.x1 < ps.body_x0 - 10):
+            b.type = "front_matter"
+
         elif b.page == 0 and b.size >= stats.body_size + 3 and b.n_lines <= 6 and centered:
             b.type = "title"
 
-        elif (b.size >= stats.body_size + 1 or b.bold) and b.n_lines <= 3 and b.n_chars < 200 \
-                and _aligned_with_column(b, stats, tol * 3):
-            b.type = "heading"
-            label = _section_label(b.text)
-            current_section = label or f"section_p{b.page}_{int(b.y0)}"
-            b.section = current_section
-
+        # Caption rules run BEFORE the heading rule: a figure/table caption's
+        # lead-in line is often bold and short and would otherwise be grabbed
+        # as a "heading" (mis-typing the caption AND destroying the float anchor
+        # figure_extract relies on). FIGURE_RE/TABLE_RE already exclude inline
+        # citations, and no genuine section heading matches them, so this is safe.
         elif FIGURE_RE.match(b.text.strip()):
             b.type = "figure_legend"
             b.section = current_section
@@ -295,6 +334,13 @@ def classify_blocks(blocks: list[Block], stats: DocStats, n_pages: int) -> None:
             b.type = "table_caption"
             b.section = current_section
 
+        elif (b.size >= stats.body_size + 1 or b.bold) and b.n_lines <= 3 and b.n_chars < 200 \
+                and _aligned_with_column(b, stats, tol * 3):
+            b.type = "heading"
+            label = _section_label(b.text)
+            current_section = label or f"section_p{b.page}_{int(b.y0)}"
+            b.section = current_section
+
         elif b.size <= stats.body_size - 1.5 and b.page >= n_pages * 0.6 and b.n_chars > 10:
             b.type = "back_matter"
             b.section = current_section
@@ -311,6 +357,82 @@ def classify_blocks(blocks: list[Block], stats: DocStats, n_pages: int) -> None:
             b.type = "unclassified"
 
         last_typed_block = b
+
+    # Post-pass: demote repeating running heads / footers the size gate missed.
+    _demote_repeating_marginalia(ordered, n_pages)
+
+
+# Block types kept out of the reading-order body flow entirely.
+SUPPRESSED_TYPES = ("header", "footer", "table_body", "front_matter", "noise")
+
+
+def _rect_contains(b: "Block", rect: tuple, frac: float = 0.6) -> bool:
+    ix = min(b.x1, rect[2]) - max(b.x0, rect[0])
+    iy = min(b.y1, rect[3]) - max(b.y0, rect[1])
+    if ix <= 0 or iy <= 0:
+        return False
+    area = (b.x1 - b.x0) * (b.y1 - b.y0)
+    return area > 0 and (ix * iy) / area > frac
+
+
+def suppress_table_bodies(pdf_path: str, blocks: list[Block], stats: DocStats) -> None:
+    """Mark blocks lying inside a detected TABLE region as `table_body` so they don't
+    leak into the reading-order body flow (the structured rows live on the scilit-table
+    fragment via figure_extract). Table regions are found with PyMuPDF `find_tables` on
+    pages that carry a `table_caption` — borderless tables have no graphical signature,
+    so caption-anchored find_tables is the reliable structural signal. The caption block
+    itself is never reclassified."""
+    import contextlib
+    import io
+    cap_pages = {b.page for b in blocks if b.type == "table_caption"}
+    if not cap_pages:
+        return
+    seed = set()
+    for p in cap_pages:
+        seed.update((p - 1, p, p + 1))
+    doc = fitz.open(pdf_path)
+    try:
+        rects_by_page: dict[int, list] = {}
+        for pno in sorted(pp for pp in seed if 0 <= pp < doc.page_count):
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    tabs = list(doc[pno].find_tables().tables)
+                except Exception:
+                    tabs = []
+            for t in tabs:
+                rects_by_page.setdefault(pno, []).append(tuple(t.bbox))
+    finally:
+        doc.close()
+    for b in blocks:
+        # never touch the caption or a figure legend; suppress prose/heading cells
+        # that fall inside a table's bbox.
+        if b.type in ("table_caption", "figure_legend"):
+            continue
+        for rect in rects_by_page.get(b.page, []):
+            if _rect_contains(b, rect):
+                b.type = "table_body"
+                break
+
+
+def _demote_repeating_marginalia(blocks: list[Block], n_pages: int) -> None:
+    """Reclassify running heads / page footers that the size‑gated header/footer rule
+    misses (their font is not always < body_size). Structural signal = REPETITION: a
+    short line whose digit‑stripped text recurs on a large fraction of pages is
+    boilerplate (journal name + DOI + 'N/M', or the running title), never body prose."""
+    def norm(t):
+        return re.sub(r"[^a-z]", "", t.lower())[:48]
+    groups: dict[str, list[Block]] = {}
+    for b in blocks:
+        # A footer/running-head can wrap to a few short lines (journal | DOI | date |
+        # 'N/M'); repetition across pages — not line count — is the reliable signal.
+        if b.n_lines <= 3 and b.n_chars < 170:
+            groups.setdefault(norm(b.text), []).append(b)
+    threshold = max(3, int(n_pages * 0.3))
+    for key, bs in groups.items():
+        if len(key) >= 8 and len({b.page for b in bs}) >= threshold:
+            for b in bs:
+                if b.type in ("body", "back_matter", "unclassified", "heading"):
+                    b.type = "footer"  # running marginalia (head or foot); dropped from flow
 
 
 def _x_overlap(a: Block, b: Block) -> bool:
@@ -427,7 +549,7 @@ def assemble_reading_order(blocks: list[Block], stats: DocStats) -> list[Block]:
     ordered = []
     by_page = {}
     for b in blocks:
-        if b.type in ("header", "footer"):
+        if b.type in SUPPRESSED_TYPES:
             continue
         by_page.setdefault(b.page, []).append(b)
 
@@ -436,7 +558,22 @@ def assemble_reading_order(blocks: list[Block], stats: DocStats) -> list[Block]:
         ps = stats.pages.get(page)
         mid = ps.column_mid if ps else 0
 
+        # Only bucket into columns when the page is GENUINELY two-column — i.e.
+        # two body blocks sit side by side (disjoint x-halves, overlapping y).
+        # Single-column pages (most PLOS/Springer bodies, and any page whose
+        # second column was a now-removed metadata sidebar) must sort by vertical
+        # position alone, or a narrow heading gets split from its wide paragraph
+        # and lands out of order.
+        def _two_column() -> bool:
+            left = [b for b in page_blocks if b.type == "body" and b.x1 < mid]
+            right = [b for b in page_blocks if b.type == "body" and b.x0 > mid]
+            return any(min(l.y1, r.y1) - max(l.y0, r.y0) > 0 for l in left for r in right)
+
+        two_col = ps is not None and _two_column()
+
         def bucket(b):
+            if not two_col:
+                return 0  # single column: pure top-to-bottom order
             if b.width > 0.6 * (ps.content_x1 - ps.content_x0 if ps else b.width):
                 return 0  # midline / full-width
             return 1 if b.x0 < mid else 2  # left column, right column
@@ -469,6 +606,9 @@ def render_markdown(blocks: list[Block]) -> str:
             out.append("## Figures")
             seen_floating = True
         if b.type == "title":
+            # strip a standardized article-class label that PDFs set above the title
+            text = re.sub(r"^(RESEARCH ARTICLE|REVIEW(\s+ARTICLE)?|ARTICLE|ORIGINAL (RESEARCH|ARTICLE)|BRIEF REPORT|PERSPECTIVE|EDITORIAL)\s+",
+                          "", text, flags=re.IGNORECASE)
             out.append(f"# {text}")
         elif b.type == "heading":
             out.append(f"## {text}")
