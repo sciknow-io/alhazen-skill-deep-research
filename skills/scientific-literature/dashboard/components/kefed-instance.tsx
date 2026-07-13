@@ -38,7 +38,7 @@ function SlotChip({ slot, binding }: { slot: OoevvSlot; binding?: SlotBinding })
   );
 }
 
-function Spreadsheet({ tpl, data }: { tpl?: TemplateDetail | null; data: DatumRow[] }) {
+export function Spreadsheet({ tpl, data }: { tpl?: TemplateDetail | null; data: DatumRow[] }) {
   const [open, setOpen] = useState<string | null>(null);
   // column order: independents (parameter/constant) first, dependent (measurement) last
   const vars = (tpl?.variables || []).slice().sort((a, b) => {

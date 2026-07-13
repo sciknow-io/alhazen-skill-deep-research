@@ -42,6 +42,12 @@ export default function OntologyPage() {
   const [kind, setKind] = useState<Kind>('all');
   const [loading, setLoading] = useState(true);
 
+  // Seed the search box from a ?q= deep link (e.g. an OOEVV term clicked in a KEfED diagram).
+  useEffect(() => {
+    const initial = new URLSearchParams(window.location.search).get('q');
+    if (initial) setQ(initial);
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     const t = setTimeout(() => {
