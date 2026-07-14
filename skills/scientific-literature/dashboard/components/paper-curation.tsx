@@ -1,28 +1,30 @@
 'use client';
 
-// Claim-centric reading of a paper's sensemaking curation. One section per reported claim,
-// gathering everything that stands behind it: the claim statement, the rhetorical observations
-// that ground it (each shown with its verbatim fragment quotes), and — grouped heuristically by
-// observation-name prefix (rhetorical "OF3A" ⊂ datum "OF3A frag2 …") — the KEfED experiment
-// designs (rendered as JS protocol graphs, not mermaid) and their data as pivot tables.
-// Instances that match no claim fall into a trailing "Additional evidence models" section so
-// nothing is silently dropped. The sensemaking linter sits in a collapsible box up top.
+// Paper sensemaking walkthrough, laid out like the standalone readout: a navigable chain
+//   claim → grounding observation (↳ its data table) → data table (▸ the KEfED model that
+//   generated it) → model diagram.
+// Three sections after the checks box: (1) reported claims + observations, (2) KEfED
+// experimental-design model diagrams (variables + protocol graph + variable-dependency
+// signature), (3) instance data tables (Spreadsheet pivot). Rich components are reused:
+// KefedProtocolGraph, Spreadsheet, and the SignatureBlock. In-page anchors make the chain
+// click-navigable; gaps close the page.
 
-import { type ReactNode, useState, useEffect } from 'react';
-import Link from 'next/link';
+import { useState, useEffect } from 'react';
 import { T } from './tokens';
 import { Panel } from './atoms';
 import { KefedProtocolGraph } from './kefed-graph';
 import { Spreadsheet } from './kefed-instance';
 import { withDb } from './db';
 import type {
-  PaperCurationDetail, BundleDetail, ReportedClaimNode, ObservationNode,
-  InstanceDetail, SensemakingCheck, InvestigationPaperRef, DataSignature,
+  PaperCurationDetail, BundleDetail, ObservationNode, InstanceDetail, TemplateDetail,
+  OoevvVarBrief, SensemakingCheck, InvestigationPaperRef, DataSignature,
 } from '@/lib/scientific-literature';
 
 // ─── styles ─────────────────────────────────────────────────────
 const subheadS: React.CSSProperties = { fontFamily: T.mono, fontSize: 10, fontWeight: 600, color: T.fgDim, textTransform: 'uppercase', letterSpacing: '0.7px', margin: '0 0 6px' };
 const tagS: React.CSSProperties = { fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint, textTransform: 'uppercase', letterSpacing: '0.5px', border: `1px solid ${T.borderDim}`, borderRadius: 3, padding: '1px 6px' };
+const jumpS: React.CSSProperties = { fontFamily: T.mono, fontSize: 10.5, color: T.teal, textDecoration: 'none', whiteSpace: 'nowrap' };
+const panelBoxS: React.CSSProperties = { border: `1px solid ${T.borderDim}`, borderRadius: 6, padding: '12px 14px', background: T.bgRaised, marginBottom: 12, scrollMarginTop: 60 };
 
 // ─── sensemaking linter (collapsible) ───────────────────────────
 function SensemakingChecksBox({ paperId }: { paperId?: string }) {
@@ -87,14 +89,20 @@ function ClaimBadge({ type }: { type?: string }) {
   );
 }
 
-// ─── one observation + its verbatim fragments ───────────────────
-function ObservationBlock({ obs, quotes }: { obs: ObservationNode; quotes: Array<{ frag: string; quote: string }> }) {
+// ─── one observation: label + content + verbatim quotes + ↳ link to its data table ──
+function ObservationBlock({ obs, quotes, instanceId, instanceName }: {
+  obs: ObservationNode;
+  quotes: Array<{ frag: string; quote: string }>;
+  instanceId?: string;
+  instanceName?: string;
+}) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
         {obs.name && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.olive }}>{obs.name}</span>}
         {obs.knowledge_level && <span style={tagS}>{obs.knowledge_level}</span>}
         {obs.bio_scale && <span style={tagS}>{obs.bio_scale}</span>}
+        {instanceId && <a href={`#inst-${instanceId}`} style={jumpS}>↳ {instanceName || 'data table'}</a>}
       </div>
       {obs.content && <p style={{ margin: '4px 0 0', fontSize: 13, lineHeight: 1.55, color: T.fg }}>{obs.content}</p>}
       {quotes.map((q, i) => (
@@ -106,6 +114,37 @@ function ObservationBlock({ obs, quotes }: { obs: ObservationNode; quotes: Array
           {q.frag && <span style={{ fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint, fontStyle: 'normal', marginLeft: 6 }}>{q.frag}</span>}
         </blockquote>
       ))}
+    </div>
+  );
+}
+
+// ─── cite chip (cross-paper hinge) ──────────────────────────────
+function CiteChip({ paper }: { paper: InvestigationPaperRef }) {
+  const label = paper.name || paper.id;
+  if (paper.id) {
+    return <a href={`/scientific-literature/paper/${encodeURIComponent(paper.id)}`}
+      style={{ fontFamily: T.mono, fontSize: 10.5, color: T.teal, textDecoration: 'none' }}>{label}</a>;
+  }
+  return <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgDim }}>{label}</span>;
+}
+
+// ─── VARIABLES list (mirrors the /template page) ────────────────
+function VariablesList({ vars }: { vars?: OoevvVarBrief[] }) {
+  if (!vars || !vars.length) return null;
+  const roleColor = (r?: string) => (r === 'measurement' ? T.teal : r === 'constant' ? T.fgFaint : T.blue);
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div style={subheadS}>Variables</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {vars.map((v) => (
+          <div key={v.id} style={{ fontFamily: T.sans, fontSize: 12.5, color: T.fg }}>
+            <span style={{ fontFamily: T.mono, fontSize: 10, color: roleColor(v.role), marginRight: 6 }}>[{v.role}]</span>
+            {v.name}
+            {v.quality?.quality && <span style={{ color: T.fgFaint }}> · measures {v.quality.quality}</span>}
+            {v.definition && <div style={{ fontFamily: T.sans, fontSize: 11.5, color: T.fgDim, paddingLeft: 18 }}>{v.definition}</div>}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -130,59 +169,39 @@ function SignatureBlock({ sig }: { sig?: DataSignature }) {
   );
 }
 
-// ─── one KEfED instance: template-design diagram + dependency signature + pivot data table ──
-function InstanceBlock({ inst, sig }: { inst: InstanceDetail; sig?: DataSignature }) {
-  const tpl = inst.template_detail;
+// ─── one KEfED model diagram: variables + protocol graph + dependency signature ──
+function ModelBlock({ tid, name, tpl, sig }: { tid: string; name?: string; tpl?: TemplateDetail | null; sig?: DataSignature }) {
   return (
-    <div style={{ border: `1px solid ${T.borderDim}`, borderRadius: 6, padding: '12px 14px', background: T.bgRaised, marginBottom: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontFamily: T.serif, fontSize: 14.5, color: T.fg }}>{inst.name || inst.id}</span>
-        {inst.template?.id && (
-          <Link
-            href={`/scientific-literature/template/${encodeURIComponent(inst.template.id)}`}
-            title={tpl?.definition || 'reusable KEfED experiment design'}
-            style={{ fontFamily: T.mono, fontSize: 10.5, color: T.olive, textDecoration: 'none', whiteSpace: 'nowrap' }}
-          >▸ generated by KEfED model: {inst.template.name || inst.template.id} →</Link>
-        )}
-      </div>
-
+    <div id={`model-${tid}`} style={panelBoxS}>
+      <div style={{ fontFamily: T.serif, fontSize: 14.5, color: T.fg, marginBottom: 6 }}>{name || tid}</div>
+      {tpl?.definition && <p style={{ margin: '0 0 10px', fontSize: 12.5, color: T.fgDim, lineHeight: 1.5 }}>{tpl.definition}</p>}
+      <VariablesList vars={tpl?.variables} />
       {tpl?.graph && (tpl.graph.processes || []).length > 0 && (
         <div style={{ marginTop: 10 }}>
-          <div style={subheadS}>KEfED template design</div>
-          <KefedProtocolGraph exp={{ id: tpl.id, name: tpl.name, experiment: tpl.graph }} />
+          <div style={subheadS}>KEfED protocol graph</div>
+          <KefedProtocolGraph exp={{ id: tid, name, experiment: tpl.graph }} />
         </div>
       )}
-
       <SignatureBlock sig={sig} />
-
-      <div style={{ marginTop: 10 }}>
-        <div style={subheadS}>Data table</div>
-        <Spreadsheet tpl={tpl} data={inst.data || []} />
-      </div>
     </div>
   );
 }
 
-// ─── cite chip (cross-paper hinge) ──────────────────────────────
-function CiteChip({ ref }: { ref: InvestigationPaperRef }) {
-  const label = ref.name || ref.id;
-  if (ref.id) {
-    return <Link href={`/scientific-literature/paper/${encodeURIComponent(ref.id)}`}
-      style={{ fontFamily: T.mono, fontSize: 10.5, color: T.teal, textDecoration: 'none' }}>{label}</Link>;
-  }
-  return <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgDim }}>{label}</span>;
+// ─── one instance data table (Spreadsheet pivot) + ▸ link to its model ──
+function TableBlock({ inst, modelName }: { inst: InstanceDetail; modelName?: string }) {
+  const tid = inst.template?.id;
+  return (
+    <div id={`inst-${inst.id}`} style={panelBoxS}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+        <span style={{ fontFamily: T.serif, fontSize: 14, color: T.fg }}>{inst.name || inst.id}</span>
+        {tid && <a href={`#model-${tid}`} style={{ fontFamily: T.mono, fontSize: 10.5, color: T.olive, textDecoration: 'none' }}>▸ generated by KEfED model: {modelName || tid} ↑</a>}
+      </div>
+      <Spreadsheet tpl={inst.template_detail} data={inst.data || []} />
+    </div>
+  );
 }
 
-// ─── word-boundary prefix match (rhetorical obs name ⊂ datum obs name) ──
-function nameMatches(datumName: string | undefined, obsName: string | undefined): boolean {
-  if (!datumName || !obsName) return false;
-  if (datumName === obsName) return true;
-  if (!datumName.startsWith(obsName)) return false;
-  const next = datumName.charAt(obsName.length);
-  return next === '' || /[^A-Za-z0-9]/.test(next);
-}
-
-// ─── main claim-centric walkthrough ─────────────────────────────
+// ─── main walkthrough ───────────────────────────────────────────
 export function PaperCuration({ data }: { data: PaperCurationDetail }) {
   const b = data.bundle || ({} as BundleDetail);
   const claims = b.reported_claims || [];
@@ -192,15 +211,14 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
 
   const obsById = new Map(observations.map((o) => [o.id, o] as const));
 
-  // claim -> observation ids (scilit-claim-observation edges)
+  // claim -> observation ids (scilit-claim-observation)
   const claimObsIds = new Map<string, string[]>();
   for (const co of data.claim_observations || []) {
     const arr = claimObsIds.get(co.claim) || [];
     arr.push(co.observation);
     claimObsIds.set(co.claim, arr);
   }
-
-  // observation id -> verbatim fragment quotes (alh-derivation: note == observation id)
+  // observation id -> verbatim fragment quotes (alh-derivation)
   const quotesByObs = new Map<string, Array<{ frag: string; quote: string }>>();
   for (const dv of data.derivations || []) {
     if (!dv.quote) continue;
@@ -208,98 +226,97 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
     arr.push({ frag: dv.frag, quote: dv.quote });
     quotesByObs.set(dv.note, arr);
   }
+  // observation id -> instance it evidences (real kefed-datum-observation link)
+  const obsInstances = data.observation_instances || {};
+  const instById = new Map(instances.map((i) => [i.id, i] as const));
 
-  // heuristic grouping: an instance belongs to a claim when any of its datum-row observation
-  // names shares a name-prefix with one of the claim's rhetorical observations.
-  const matchedInstanceIds = new Set<string>();
-  const instancesForClaim = (claimId: string): InstanceDetail[] => {
-    const names = (claimObsIds.get(claimId) || [])
-      .map((id) => obsById.get(id)?.name)
-      .filter(Boolean) as string[];
-    if (!names.length) return [];
-    const hits = instances.filter((inst) =>
-      (inst.data || []).some((r) => names.some((n) => nameMatches(r.observation?.name, n)))
-    );
-    hits.forEach((i) => matchedInstanceIds.add(i.id));
-    return hits;
-  };
+  // unique KEfED models (dedup by template id), order-stable by first instance
+  const modelOrder: string[] = [];
+  const modelMeta = new Map<string, { name?: string; tpl?: TemplateDetail | null }>();
+  for (const inst of instances) {
+    const tid = inst.template?.id;
+    if (tid && !modelMeta.has(tid)) {
+      modelMeta.set(tid, { name: inst.template?.name || inst.template_detail?.name, tpl: inst.template_detail });
+      modelOrder.push(tid);
+    }
+  }
 
-  // pre-compute so matchedInstanceIds is populated before the leftover bucket is derived
-  const claimBlocks = claims.map((c) => ({
-    claim: c,
-    obs: (claimObsIds.get(c.id) || []).map((id) => obsById.get(id)).filter(Boolean) as ObservationNode[],
-    insts: instancesForClaim(c.id),
-  }));
-  const leftover = instances.filter((i) => !matchedInstanceIds.has(i.id));
-
-  // TOC entries
-  const toc: Array<{ id: string; label: string }> = claimBlocks.map((cb, i) => ({
-    id: `claim-${i}`, label: `Claim ${i + 1}`,
-  }));
-  if (leftover.length) toc.push({ id: 'additional', label: 'Additional models' });
-  if (gaps.length) toc.push({ id: 'gaps', label: 'Gaps' });
-
-  const claimSection = (cb: typeof claimBlocks[number], i: number): ReactNode => (
-    <section key={cb.claim.id} id={`claim-${i}`} style={{ scrollMarginTop: 60 }}>
-      <Panel title={`Claim ${i + 1}`} action={<ClaimBadge type={cb.claim.type} />}>
-        <p style={{ margin: 0, fontFamily: T.serif, fontSize: 16, lineHeight: 1.55, color: T.fg }}>{cb.claim.statement}</p>
-        {cb.claim.cites && cb.claim.cites.length > 0 && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
-            <span style={{ fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint, textTransform: 'uppercase' }}>cites</span>
-            {cb.claim.cites.map((c) => <CiteChip key={c.id} ref={c} />)}
-          </div>
-        )}
-
-        <div>
-          <div style={subheadS}>Observations ({cb.obs.length})</div>
-          {cb.obs.length
-            ? cb.obs.map((o) => <ObservationBlock key={o.id} obs={o} quotes={quotesByObs.get(o.id) || []} />)
-            : <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>— none linked —</span>}
-        </div>
-
-        {cb.insts.length > 0 && (
-          <div>
-            <div style={subheadS}>Evidence — KEfED models &amp; data ({cb.insts.length})</div>
-            {cb.insts.map((inst) => <InstanceBlock key={inst.id} inst={inst} sig={data.signatures?.[inst.template?.id || '']} />)}
-          </div>
-        )}
-      </Panel>
-    </section>
-  );
+  const nav = [
+    claims.length && { id: 'claims', label: 'Claims' },
+    modelOrder.length && { id: 'models', label: 'Model diagrams' },
+    instances.length && { id: 'tables', label: 'Data tables' },
+    gaps.length && { id: 'gaps', label: 'Gaps' },
+  ].filter(Boolean) as Array<{ id: string; label: string }>;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <SensemakingChecksBox paperId={data.paper?.id} />
 
-      {/* sticky claim TOC */}
-      {toc.length > 1 && (
+      {nav.length > 1 && (
         <nav style={{
           position: 'sticky', top: 0, zIndex: 5, background: T.panelHi, backdropFilter: 'blur(6px)',
-          border: `1px solid ${T.border}`, borderRadius: 4, padding: '10px 14px',
-          display: 'flex', flexWrap: 'wrap', gap: 12,
+          border: `1px solid ${T.border}`, borderRadius: 4, padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: 12,
         }}>
-          <span style={{ fontFamily: T.mono, fontSize: 10, letterSpacing: '1.2px', textTransform: 'uppercase', color: T.fgDim }}>Claims:</span>
-          {toc.map((t) => (
-            <a key={t.id} href={`#${t.id}`} style={{ fontFamily: T.mono, fontSize: 10.5, color: T.teal, textDecoration: 'none' }}>{t.label}</a>
-          ))}
+          <span style={{ fontFamily: T.mono, fontSize: 10, letterSpacing: '1.2px', textTransform: 'uppercase', color: T.fgDim }}>
+            claim → observation (↳) → data table → model (▸):
+          </span>
+          {nav.map((t) => <a key={t.id} href={`#${t.id}`} style={jumpS}>{t.label}</a>)}
         </nav>
       )}
 
-      {claimBlocks.map(claimSection)}
-
-      {/* instances that matched no claim — never silently dropped */}
-      {leftover.length > 0 && (
-        <section id="additional" style={{ scrollMarginTop: 60 }}>
-          <Panel title={`Additional evidence models (${leftover.length})`}>
-            <p style={{ margin: '0 0 8px', fontSize: 12.5, color: T.fgDim }}>
-              KEfED instances not matched to a specific claim by observation name.
-            </p>
-            {leftover.map((inst) => <InstanceBlock key={inst.id} inst={inst} sig={data.signatures?.[inst.template?.id || '']} />)}
+      {/* 1. reported claims → grounding observations */}
+      {claims.length > 0 && (
+        <section id="claims" style={{ scrollMarginTop: 60 }}>
+          <Panel title={`Reported claims → grounding observations (${claims.length})`}>
+            {claims.map((c) => {
+              const oids = claimObsIds.get(c.id) || [];
+              return (
+                <div key={c.id} id={`claim-${c.id}`} style={{ borderLeft: `3px solid ${T.blue}`, paddingLeft: 12, margin: '14px 0', scrollMarginTop: 60 }}>
+                  <ClaimBadge type={c.type} />
+                  <p style={{ margin: '5px 0', fontFamily: T.serif, fontSize: 15, lineHeight: 1.5, color: T.fg }}>{c.statement}</p>
+                  {c.cites && c.cites.length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline', marginBottom: 4 }}>
+                      <span style={{ fontFamily: T.mono, fontSize: 9.5, color: T.fgFaint, textTransform: 'uppercase' }}>cites</span>
+                      {c.cites.map((p) => <CiteChip key={p.id} paper={p} />)}
+                    </div>
+                  )}
+                  {oids.length
+                    ? oids.map((oid) => {
+                        const o = obsById.get(oid);
+                        if (!o) return null;
+                        const iid = obsInstances[oid]?.[0];
+                        return <ObservationBlock key={oid} obs={o} quotes={quotesByObs.get(oid) || []}
+                          instanceId={iid} instanceName={iid ? instById.get(iid)?.template?.name : undefined} />;
+                      })
+                    : <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>— no linked observation —</span>}
+                </div>
+              );
+            })}
           </Panel>
         </section>
       )}
 
-      {/* stated gaps (open questions the paper names) */}
+      {/* 2. KEfED experimental-design model diagrams */}
+      {modelOrder.length > 0 && (
+        <section id="models" style={{ scrollMarginTop: 60 }}>
+          <Panel title={`KEfED experimental-design models (${modelOrder.length})`}>
+            {modelOrder.map((tid) => (
+              <ModelBlock key={tid} tid={tid} name={modelMeta.get(tid)?.name} tpl={modelMeta.get(tid)?.tpl} sig={data.signatures?.[tid]} />
+            ))}
+          </Panel>
+        </section>
+      )}
+
+      {/* 3. instance data tables */}
+      {instances.length > 0 && (
+        <section id="tables" style={{ scrollMarginTop: 60 }}>
+          <Panel title={`Data tables (${instances.length})`}>
+            {instances.map((inst) => <TableBlock key={inst.id} inst={inst} modelName={inst.template?.name} />)}
+          </Panel>
+        </section>
+      )}
+
+      {/* 4. stated gaps */}
       {gaps.length > 0 && (
         <section id="gaps" style={{ scrollMarginTop: 60 }}>
           <Panel title={`Gaps (${gaps.length})`}>

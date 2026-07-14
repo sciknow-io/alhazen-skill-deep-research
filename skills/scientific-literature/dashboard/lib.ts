@@ -535,6 +535,7 @@ export interface PaperCurationDetail {
   fragments?: Fragment[];
   derivations?: Derivation[];
   claim_observations?: Array<{ claim: string; observation: string }>;
+  observation_instances?: Record<string, string[]>;  // observation id -> instance id(s) it evidences
   bundle?: BundleDetail;
   signatures?: Record<string, DataSignature>;   // keyed by kefed-model id
 }

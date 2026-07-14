@@ -3649,6 +3649,19 @@ def cmd_show_paper_curation(args):
                 f'(claim: $c, observation: $o) isa scilit-claim-observation; '
                 f'fetch {{ "claim": $c.id, "observation": $o.id }};').resolve())
             claim_observations = [{k: v for k, v in r.items() if v is not None} for r in co_rows]
+            # observation -> instance(s) it evidences (kefed-datum-observation -> kefed-instance-datum),
+            # so the walkthrough can link claim -> observation -> data table.
+            oi_rows = list(tx.query(
+                f'match $b isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
+                f'(sensemaking: $b, observation: $o) isa scilit-sensemaking-observation; '
+                f'(datum: $d, observation: $o) isa kefed-datum-observation; '
+                f'(instance: $i, datum: $d) isa kefed-instance-datum; '
+                f'fetch {{ "observation": $o.id, "instance": $i.id }};').resolve())
+            observation_instances = {}
+            for r in oi_rows:
+                arr = observation_instances.setdefault(r["observation"], [])
+                if r["instance"] not in arr:
+                    arr.append(r["instance"])
             spine_rows = list(tx.query(
                 f'match $bn isa scilit-paper-sensemaking, has id "{escape_string(bundle_id)}"; '
                 f'(phase: $ph, sensemaking: $bn) isa scilit-phase-sensemaking; '
@@ -3678,6 +3691,7 @@ def cmd_show_paper_curation(args):
         "success": True, "hasCuration": True, "paper": paper, "fulltext": fulltext,
         "bundle_id": bundle_id, "spine": spine, "fragments": fragments,
         "derivations": derivations, "claim_observations": claim_observations,
+        "observation_instances": observation_instances,
         "bundle": bundle, "signatures": signatures,
     }, indent=2))
 
