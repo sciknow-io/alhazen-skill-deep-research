@@ -522,7 +522,8 @@ export interface Fragment { id: string; content?: string; offset?: number; lengt
 export interface Derivation { note: string; frag: string; offset?: number; quote?: string }
 export interface CurationSpine { id: string; name?: string; iteration?: number; phase?: string }
 export interface SignatureIndexRef { id: string; name?: string; role?: string }
-export type DataSignature = Record<string, { name?: string; index?: SignatureIndexRef[] }>;
+// keyed by measurement variable id -> its index set + parameters consumed by an upstream transform
+export type DataSignature = Record<string, { name?: string; index?: SignatureIndexRef[]; consumed?: SignatureIndexRef[] }>;
 
 export interface PaperCurationDetail {
   success: boolean;

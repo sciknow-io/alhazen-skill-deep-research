@@ -3657,12 +3657,23 @@ def cmd_show_paper_curation(args):
                 f'$it has scilit-iteration-index $idx; '
                 f'fetch {{ "id": $iv.id, "name": $iv.name, "iteration": $idx, "phase": $ph.id }};').resolve())
             spine = ({k: v for k, v in spine_rows[0].items() if v is not None} if spine_rows else None)
+            # Data signature per KEfED model, keyed by model id. Cover BOTH inline experiments
+            # AND the templates behind instances (instance-based curation is the common case);
+            # the dashboard looks these up by template id to render each measurement's variable
+            # dependencies (the structure a data table must conform to).
             signatures = {}
-            for e in bundle.get("experiments", []):
+            sig_model_ids = [e["id"] for e in bundle.get("experiments", [])]
+            for inst in bundle.get("instances", []):
+                tid = (inst.get("template") or {}).get("id")
+                if tid:
+                    sig_model_ids.append(tid)
+            for mid in sig_model_ids:
+                if mid in signatures:
+                    continue
                 try:
-                    signatures[e["id"]] = _data_signature(tx, e["id"])
+                    signatures[mid] = _data_signature(tx, mid)
                 except Exception:
-                    signatures[e["id"]] = {}
+                    signatures[mid] = {}
     print(json.dumps({
         "success": True, "hasCuration": True, "paper": paper, "fulltext": fulltext,
         "bundle_id": bundle_id, "spine": spine, "fragments": fragments,
