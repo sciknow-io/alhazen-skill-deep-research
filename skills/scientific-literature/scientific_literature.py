@@ -2662,7 +2662,8 @@ def _load_bundle(tx, bundle_id):
     rg_rows = list(tx.query(
         f'match $b isa scilit-paper-sensemaking, has id "{be}"; '
         f'(sensemaking: $b, reported-gap: $g) isa scilit-sensemaking-reported-gap; '
-        f'fetch {{ "id": $g.id, "name": $g.name, "goal": $g.scilit-knowledge-goal }};').resolve())
+        f'fetch {{ "id": $g.id, "name": $g.name, "content": $g.content, '
+        f'"goal": $g.scilit-knowledge-goal }};').resolve())
     bundle["reported_gaps"] = [{k: v for k, v in r.items() if v is not None} for r in rg_rows]
 
     mech_rows = list(tx.query(
@@ -2715,6 +2716,30 @@ def _load_instances(tx, bundle_id):
         inst["template_detail"] = seen_tpl.get(tid)
         insts.append(inst)
     return insts
+
+
+def _bundle_model_ids(tx, bundle_id):
+    """Every KEfED bigraph model reachable under a sensemaking bundle: inline experiments
+    (kefed-model attached via scilit-sensemaking-experiment) PLUS the templates behind template
+    instances (kefed-instance -> kefed-instance-of:model). De-duplicated, order-stable."""
+    esc = escape_string(bundle_id)
+    ids = []
+    for r in tx.query(
+        f'match $b isa scilit-paper-sensemaking, has id "{esc}"; '
+        f'(sensemaking: $b, experiment: $m) isa scilit-sensemaking-experiment; $m isa kefed-model; '
+        f'fetch {{ "id": $m.id }};').resolve():
+        ids.append(r["id"])
+    for r in tx.query(
+        f'match $b isa scilit-paper-sensemaking, has id "{esc}"; '
+        f'(sensemaking: $b, experiment: $i) isa scilit-sensemaking-experiment; $i isa kefed-instance; '
+        f'(instance: $i, model: $t) isa kefed-instance-of; '
+        f'fetch {{ "id": $t.id }};').resolve():
+        ids.append(r["id"])
+    seen, out = set(), []
+    for i in ids:
+        if i not in seen:
+            seen.add(i); out.append(i)
+    return out
 
 
 def _scale_of(tx, var_id):
@@ -2822,96 +2847,176 @@ def _load_experiment(tx, exp_id):
     return {"id": exp_id, "processes": nodes}
 
 
-def _data_signature(tx, model_id):
-    """Compute the data signature for a KEfED model.
+def _model_graph(tx, model_id):
+    """Load a KEfED model as an in-memory bigraph for signature/lint/export.
 
-    For each measurement-role ooevv-variable attached (via kefed-node-variable) to a node
-    in the model (kefed-model-element), compute its index set = the parameter- and
-    constant-role variables on nodes reachable upstream from the measurement's node.
-
-    Traversal rule (BFS, bounded to model's nodes):
-      Starting from the measurement variable's node, follow flow edges in the UPSTREAM
-      direction to discover all nodes that feed data into the measurement:
-        - ooevv-process-input in reverse: find input-node where consuming-node = current
-        - ooevv-process-output in reverse: find producing-node where output-node = current
-      Collect parameter- and constant-role variables from EVERY visited node (including
-      the measurement's own node). Traversal stops when no new in-model nodes are found.
-
-    Returns:
-        dict: {measurement_var_id: {"name": <name>, "index": [{"id":..., "name":..., "role":...}, ...]}}
+    Returns a dict with:
+      nodes       : [node_id, ...] (all kefed-model-node ids in the model)
+      klass       : {node_id: 'entity'|'process'|None}   (bigraph node class)
+      is_dt       : {node_id: bool}                        (True iff data-transformation)
+      local       : {node_id: [{id,name,role}, ...]}       (parameter/constant vars on the node)
+      measures    : {node_id: [{id,name}, ...]}            (measurement vars on the node)
+      feeders     : {node_id: {feeder_node_id, ...}}       (direct upstream nodes)
+      edges       : [{"kind":"input"|"output","src":..,"dst":..}, ...]  (as curated)
+      dt_drop     : {dt_node_id: {var_id, ...}}            (in-params consumed at this DT)
+      dt_add      : {dt_node_id: {var_id, ...}}            (out-params introduced at this DT)
+      dt_has_map  : {dt_node_id: bool}                     (any ooevv-param-mapping declared)
+      var_info    : {var_id: {"name":..,"role":..}}        (every param/constant var in the model)
     """
     esc = escape_string(model_id)
-
-    # 1. Get all node ids in this model (to bound traversal)
-    node_rows = list(tx.query(
+    node_ids = [r["id"] for r in tx.query(
         f'match $m isa kefed-model, has id "{esc}"; '
         f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
-        f'fetch {{ "id": $n.id }};').resolve())
-    model_node_ids = {r["id"] for r in node_rows}
+        f'fetch {{ "id": $n.id }};').resolve()]
+    node_set = set(node_ids)
+    klass, is_dt, def_of = {}, {}, {}
+    local, measures = {nid: [] for nid in node_ids}, {nid: [] for nid in node_ids}
+    var_info = {}
+    for nid in node_ids:
+        did, lbl = _node_def(tx, nid)
+        def_of[nid] = did
+        klass[nid] = _node_class(lbl)
+        is_dt[nid] = (lbl == "ooevv-data-transformation")
+        ne = escape_string(nid)
+        for r in tx.query(
+            f'match $n isa kefed-model-node, has id "{ne}"; '
+            f'(node: $n, variable: $v) isa kefed-node-variable; '
+            f'$v isa ooevv-variable, has ooevv-variable-role $role, has name $vn; '
+            f'fetch {{ "id": $v.id, "role": $role, "name": $vn }};').resolve():
+            entry = {"id": r["id"], "name": r.get("name", ""), "role": r["role"]}
+            if r["role"] in ("parameter", "constant"):
+                local[nid].append(entry)
+                var_info[r["id"]] = {"name": entry["name"], "role": entry["role"]}
+            elif r["role"] == "measurement":
+                measures[nid].append({"id": r["id"], "name": entry["name"]})
 
-    # 2. Build upstream adjacency map: node_id -> {set of node_ids that feed into it}
-    #    Follow ooevv-process-input (input-node -> consuming-node) backwards.
-    #    Follow ooevv-process-output (producing-node -> output-node) backwards.
-    upstream = {nid: set() for nid in model_node_ids}
-    for nid in model_node_ids:
+    # flow edges -> feeders (direct upstream). input: entity(input-node)->process(consuming-node);
+    # output: process(producing-node)->entity(output-node).
+    feeders = {nid: set() for nid in node_ids}
+    edges = []
+    for nid in node_ids:
         ne = escape_string(nid)
         for r in tx.query(
             f'match $n isa kefed-model-node, has id "{ne}"; '
             f'(input-node: $src, consuming-node: $n) isa ooevv-process-input; '
             f'fetch {{ "src": $src.id }};').resolve():
-            if r["src"] in model_node_ids:
-                upstream[nid].add(r["src"])
+            if r["src"] in node_set:
+                feeders[nid].add(r["src"]); edges.append({"kind": "input", "src": r["src"], "dst": nid})
         for r in tx.query(
             f'match $n isa kefed-model-node, has id "{ne}"; '
             f'(producing-node: $src, output-node: $n) isa ooevv-process-output; '
             f'fetch {{ "src": $src.id }};').resolve():
-            if r["src"] in model_node_ids:
-                upstream[nid].add(r["src"])
+            if r["src"] in node_set:
+                feeders[nid].add(r["src"]); edges.append({"kind": "output", "src": r["src"], "dst": nid})
 
-    # 3. Find all measurement variables and their home nodes in this model
-    meas_rows = list(tx.query(
+    # param-mappings per DT node (transformation role played by the DT DEFINITION). Restrict to
+    # this model's variables so a def shared across models resolves each model's mapping locally.
+    model_var_ids = set(var_info)
+    dt_drop, dt_add, dt_has_map = {}, {}, {}
+    for nid in node_ids:
+        if not is_dt[nid]:
+            continue
+        de = escape_string(def_of[nid])
+        ins = {r["id"] for r in tx.query(
+            f'match $t isa ooevv-data-transformation, has id "{de}"; '
+            f'(transformation: $t, in-parameter: $v) isa ooevv-param-mapping; '
+            f'fetch {{ "id": $v.id }};').resolve()}
+        outs = {r["id"] for r in tx.query(
+            f'match $t isa ooevv-data-transformation, has id "{de}"; '
+            f'(transformation: $t, out-parameter: $v) isa ooevv-param-mapping; '
+            f'fetch {{ "id": $v.id }};').resolve()}
+        dt_has_map[nid] = bool(ins or outs)
+        dt_drop[nid] = ins & model_var_ids     # every mapped in-param leaves the index here
+        dt_add[nid] = outs & model_var_ids      # every mapped out-param enters the index here
+
+    # subject (source) node of the model, if declared
+    subj = list(tx.query(
         f'match $m isa kefed-model, has id "{esc}"; '
-        f'(model: $m, element: $n) isa kefed-model-element; $n isa kefed-model-node; '
-        f'(node: $n, variable: $v) isa kefed-node-variable; '
-        f'$v isa ooevv-variable, has ooevv-variable-role "measurement"; '
-        f'$v has name $vname; '
-        f'fetch {{ "vid": $v.id, "vname": $vname, "nid": $n.id }};').resolve())
+        f'(model: $m, subject-node: $n) isa ooevv-subject; fetch {{ "id": $n.id }};').resolve())
+    subject = subj[0]["id"] if subj else None
 
-    # 4. For each measurement, BFS upstream and collect parameter/constant variables
+    return {"model_id": model_id, "nodes": node_ids, "klass": klass, "is_dt": is_dt, "local": local,
+            "measures": measures, "feeders": feeders, "edges": edges, "dt_drop": dt_drop,
+            "dt_add": dt_add, "dt_has_map": dt_has_map, "var_info": var_info, "subject": subject}
+
+
+def _carried_index(g, node_id, _cache=None, _path=None):
+    """Set of parameter/constant var-ids that index the material/data AT node_id.
+
+    Forward propagation over the bigraph: a node inherits the index sets of its feeders, then a
+    DATA-TRANSFORMATION rewrites that set by its declared param-mapping (drop every mapped
+    in-parameter, add every mapped out-parameter — this is how a correlation CONSUMES the
+    per-sample index instead of carrying it forward), and finally the node's own local
+    parameters/constants are unioned in. Non-transformation nodes just pass the union through.
+    Unmapped incoming params on a data-transformation default to passthrough (kept) — the linter
+    flags a data-transformation that leaves incoming index params unmapped.
+    """
+    _cache = {} if _cache is None else _cache
+    _path = set() if _path is None else _path
+    if node_id in _cache:
+        return _cache[node_id]
+    if node_id in _path:            # cycle guard — acyclicity is a separate lint check
+        return set()
+    inc = set()
+    for f in g["feeders"].get(node_id, ()):  # DFS feeders
+        inc |= _carried_index(g, f, _cache, _path | {node_id})
+    if g["is_dt"].get(node_id):
+        inc = (inc - g["dt_drop"].get(node_id, set())) | g["dt_add"].get(node_id, set())
+    out = inc | {v["id"] for v in g["local"].get(node_id, [])}
+    _cache[node_id] = out
+    return out
+
+
+def _upstream_closure(g, node_id):
+    """All nodes reachable upstream from node_id via feeder edges (excludes node_id itself only if
+    it has no self-loop)."""
+    seen, queue = set(), [node_id]
+    while queue:
+        n = queue.pop()
+        for f in g["feeders"].get(n, ()):
+            if f not in seen:
+                seen.add(f); queue.append(f)
+    return seen
+
+
+def _data_signature(tx, model_id):
+    """Compute the data signature (index set) for every measurement in a KEfED model.
+
+    The index set of a measurement is the set of parameter/constant variables that index its
+    readout, computed by FORWARD propagation of index sets through the bigraph (see
+    _carried_index) so that a data-transformation's declared ooevv-param-mapping correctly
+    consumes/introduces index parameters. This replaces the old naive "union of everything
+    upstream", which wrongly kept parameters that a computation (e.g. a correlation, a
+    mean-over-replicates) actually destroys.
+
+    Returns:
+        dict: {measurement_var_id: {"name": <name>,
+                                    "index": [{"id","name","role"}, ...],
+                                    "consumed": [{"id","name","role"}, ...]}}
+        where "consumed" lists parameters removed from the index by a data-transformation
+        upstream of the measurement (index provenance, for legibility).
+    """
+    g = _model_graph(tx, model_id)
+    vinfo = g["var_info"]
+
+    def _render(vid):
+        info = vinfo.get(vid, {})
+        return {"id": vid, "name": info.get("name", ""), "role": info.get("role", "")}
+
+    cache = {}
     result = {}
-    for row in meas_rows:
-        vid = row["vid"]
-        vname = row.get("vname", "")
-        start_nid = row["nid"]
-
-        # BFS from start_nid following upstream edges
-        visited = set()
-        queue = [start_nid]
-        while queue:
-            curr = queue.pop(0)
-            if curr in visited:
-                continue
-            visited.add(curr)
-            for parent in upstream.get(curr, set()):
-                if parent not in visited:
-                    queue.append(parent)
-
-        # Collect parameter/constant variables from all visited nodes
-        index = []
-        for node_id in visited:
-            ne = escape_string(node_id)
-            pv_rows = list(tx.query(
-                f'match $n isa kefed-model-node, has id "{ne}"; '
-                f'(node: $n, variable: $pv) isa kefed-node-variable; '
-                f'$pv isa ooevv-variable, has ooevv-variable-role $prole; '
-                f'$pv has name $pvname; '
-                f'fetch {{ "id": $pv.id, "role": $prole, "name": $pvname }};').resolve())
-            for pv in pv_rows:
-                if pv["role"] in ("parameter", "constant"):
-                    index.append({"id": pv["id"], "name": pv.get("name", ""), "role": pv["role"]})
-
-        result[vid] = {"name": vname, "index": index}
-
+    for nid in g["nodes"]:
+        for m in g["measures"].get(nid, []):
+            idx = _carried_index(g, nid, cache)
+            consumed = set()
+            for up in _upstream_closure(g, nid) | {nid}:
+                if g["is_dt"].get(up):
+                    consumed |= g["dt_drop"].get(up, set())
+            result[m["id"]] = {
+                "name": m.get("name", ""),
+                "index": [_render(v) for v in sorted(idx)],
+                "consumed": [_render(v) for v in sorted(consumed)],
+            }
     return result
 
 
@@ -2925,14 +3030,53 @@ def cmd_show_data_signature(args):
     print(json.dumps(sig, indent=2))
 
 
+def _to_hgraph(g):
+    """Serialize a KEfED bigraph (a _model_graph dict) into a Bolinas-style rooted hypergraph term:
+    a PENMAN/AMR-like bracketed form `(node/label :edge child ...)` rooted at the subject, with
+    directed :input / :output hyperedges and reentrancy (a node mentioned again is emitted by id
+    alone). Node concept labels are the bigraph class (entity|process) refined by OOEVV type. This
+    is the export path for a future graph-grammar (SHRG) DESIGN-PATTERN validation layer — Bolinas
+    itself is Python 2 and out of scope now, so this emits the graph; it does not yet parse it.
+    """
+    children = {n: [] for n in g["nodes"]}
+    for e in g["edges"]:
+        children.setdefault(e["src"], []).append((e["kind"], e["dst"]))
+    root = g.get("subject") or (g["nodes"][0] if g["nodes"] else None)
+    if root is None:
+        return "()"
+    seen = set()
+
+    def _nid(n):
+        return n.replace("knode-", "n_")
+
+    def emit(n):
+        if n in seen:
+            return _nid(n)                       # reentrant reference (shared node)
+        seen.add(n)
+        lbl = g["klass"].get(n) or "node"
+        parts = [f"{_nid(n)}/{lbl}"]
+        for kind, dst in children.get(n, []):
+            parts.append(f":{kind} {emit(dst)}")
+        return "(" + " ".join(parts) + ")"
+
+    term = emit(root)
+    extra = [emit(n) for n in g["nodes"] if n not in seen]  # unreachable-from-root fragments
+    return term if not extra else term + " " + " ".join(extra)
+
+
 def cmd_show_experiment(args):
-    """Show one experiment's full protocol graph (processes, hierarchy, parameters, measurements)."""
+    """Show one experiment's full protocol graph (processes, hierarchy, parameters, measurements).
+    --format hgraph emits the Bolinas-style hypergraph term instead (for the future SHRG layer)."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             head = list(tx.query(f'match $m isa kefed-model, has id "{escape_string(args.id)}"; '
                                  f'fetch {{ "name": $m.name }};').resolve())
             if not head:
                 print(json.dumps({"success": False, "error": "Experiment not found"})); sys.exit(1)
+            if getattr(args, "format", "json") == "hgraph":
+                g = _model_graph(tx, args.id)
+                print(_to_hgraph(g))
+                return
             exp = _load_experiment(tx, args.id)
             exp["name"] = head[0].get("name")
     print(json.dumps({"success": True, **exp}, indent=2))
@@ -3003,7 +3147,8 @@ def _load_instance(tx, instance_id):
             f'$c isa kefed-cell, links (datum: $d, cell-variable: $v), has kefed-cell-value $val; '
             f'$v has name $vn, has ooevv-variable-role $vr; '
             f'fetch {{ "variable": $v.id, "name": $vn, "role": $vr, "value": $val, '
-            f'"number": $c.kefed-cell-number }};').resolve())
+            f'"number": $c.kefed-cell-number, "n": $c.kefed-cell-n, "error": $c.kefed-cell-error, '
+            f'"error_type": $c.kefed-cell-error-type, "unit": $c.kefed-cell-unit }};').resolve())
         row = {"id": did, "cells": [{k: v for k, v in c.items() if v is not None} for c in cells]}
         obs = list(tx.query(
             f'match $d isa kefed-row, has id "{de}"; '
@@ -3644,10 +3789,156 @@ def _chk_fragments_located(ctx):
                     "{n} fragment(s) could not be located in the full text", warn=True)
 
 
+# --- KEfED bigraph structural checks (operate over ctx["graphs"] = {model_id: _model_graph}) ---
+# The bigraph models under a bundle are the inline experiments AND the templates behind instances;
+# ctx["graphs"] gathers them all, so these checks cover template-based curation too (where the
+# earlier experiment-only checks were silent).
+
+def _edge_key(mid, e):
+    return f"{mid}:{e['src']}-{e['kind']}->{e['dst']}"
+
+
+def _chk_bipartite(ctx):
+    """No flow edge joins two nodes of the SAME class — entities never flow into entities and
+    processes never flow into processes (the defining bigraph invariant)."""
+    offenders = []
+    for mid, g in ctx["graphs"].items():
+        for e in g["edges"]:
+            sc, tc = g["klass"].get(e["src"]), g["klass"].get(e["dst"])
+            if sc is not None and sc == tc:
+                offenders.append(_edge_key(mid, e))
+    return _finding("bigraph-bipartite", "Flow graph is bipartite (entity<->process)", "kefed", "high",
+                    offenders, "every flow edge joins an entity to a process",
+                    "{n} flow edge(s) join two nodes of the same class (entity-entity or process-process)")
+
+
+def _chk_flow_roles(ctx):
+    """Flow edges run the correct direction for their role: input edges go entity->process
+    (input-node is the entity consumed BY the process), output edges go process->entity."""
+    offenders = []
+    for mid, g in ctx["graphs"].items():
+        for e in g["edges"]:
+            sc, tc = g["klass"].get(e["src"]), g["klass"].get(e["dst"])
+            if sc is None or tc is None or sc == tc:
+                continue  # untyped or same-class handled by bipartite check
+            want = ("entity", "process") if e["kind"] == "input" else ("process", "entity")
+            if (sc, tc) != want:
+                offenders.append(_edge_key(mid, e))
+    return _finding("bigraph-flow-roles", "Flow edges are correctly directed", "kefed", "high",
+                    offenders, "every input edge is entity->process and every output edge process->entity",
+                    "{n} flow edge(s) are wired in the wrong direction for their role")
+
+
+def _has_cycle(feeders):
+    """DFS cycle detection over a feeders adjacency map."""
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in feeders}
+    def visit(n):
+        color[n] = GREY
+        for m in feeders.get(n, ()):
+            if color.get(m, WHITE) == GREY:
+                return True
+            if color.get(m, WHITE) == WHITE and visit(m):
+                return True
+        color[n] = BLACK
+        return False
+    return any(color[n] == WHITE and visit(n) for n in feeders)
+
+
+def _chk_acyclic(ctx):
+    """Each model's flow graph is a DAG — a cycle makes the data-signature traversal ill-defined."""
+    offenders = [mid for mid, g in ctx["graphs"].items() if _has_cycle(g["feeders"])]
+    return _finding("bigraph-acyclic", "Flow graph is acyclic (a DAG)", "kefed", "high",
+                    offenders, "every model's flow graph is a DAG",
+                    "{n} model(s) contain a cycle in their flow graph")
+
+
+def _chk_transformation_mapping(ctx):
+    """Every data-transformation whose inputs carry index parameters must DECLARE how it maps them
+    (ooevv-param-mapping). Without it the signature falls back to naive passthrough — the exact bug
+    where a correlation/mean keeps an index it actually consumes. Curation must be explicit."""
+    offenders = []
+    for mid, g in ctx["graphs"].items():
+        cache = {}
+        for n in g["nodes"]:
+            if not g["is_dt"].get(n):
+                continue
+            incoming = set()
+            for f in g["feeders"].get(n, ()):
+                incoming |= _carried_index(g, f, cache)
+            if incoming and not g["dt_has_map"].get(n):
+                offenders.append(f"{mid}:{n}")
+    return _finding("transformation-mapping", "Data-transformations declare their param mapping",
+                    "kefed", "high", offenders,
+                    "every index-consuming data-transformation declares an ooevv-param-mapping",
+                    "{n} data-transformation(s) with indexed inputs declare no param mapping "
+                    "(use map-params; index defaults to naive passthrough)")
+
+
+def _chk_experiment_has_subject(ctx):
+    """Every KEfED model declares a subject (source) node — the experimental material the protocol
+    starts from. Without it the protocol spine has no defined beginning."""
+    offenders = [mid for mid, g in ctx["graphs"].items() if g["nodes"] and not g["subject"]]
+    return _finding("experiment-has-subject", "Experiments declare a subject node", "kefed", "high",
+                    offenders, "every model declares an ooevv-subject source node",
+                    "{n} model(s) declare no subject node")
+
+
+def _chk_nodes_connected(ctx):
+    """No island nodes: every node participates in at least one flow edge (a lone subject in a
+    single-node model is allowed)."""
+    offenders = []
+    for mid, g in ctx["graphs"].items():
+        incident = {e["src"] for e in g["edges"]} | {e["dst"] for e in g["edges"]}
+        for n in g["nodes"]:
+            if n not in incident and not (len(g["nodes"]) == 1 and n == g["subject"]):
+                offenders.append(f"{mid}:{n}")
+    return _finding("nodes-connected", "No island nodes in the flow graph", "kefed", "medium",
+                    offenders, "every node participates in >=1 flow edge",
+                    "{n} node(s) are disconnected from the flow graph", warn=True)
+
+
+def _measurement_cells(ctx):
+    """Yield (instance_id, row_id, cell) for every measurement-role cell across the bundle's
+    instance data rows — the recorded readout values."""
+    for inst in ctx["bundle"].get("instances") or []:
+        for row in inst.get("data") or []:
+            for c in row.get("cells") or []:
+                if c.get("role") == "measurement":
+                    yield inst.get("id"), row.get("id"), c
+
+
+def _chk_measurement_units(ctx):
+    """Every numeric readout value carries a unit (per-row kefed-cell-unit) — a bare number is not
+    interpretable. Dimensionless readouts should say so explicitly (unit 'ratio'/'dimensionless')."""
+    offenders = [f"{iid}:{rid}:{c.get('variable')}"
+                 for iid, rid, c in _measurement_cells(ctx)
+                 if c.get("number") is not None and not c.get("unit")]
+    return _finding("measurement-units", "Numeric readouts carry a unit", "ooevv", "medium",
+                    offenders, "every numeric readout value has a unit",
+                    "{n} numeric readout value(s) have no unit (set 'unit' on the datum cell)", warn=True)
+
+
+def _chk_readout_sample_size(ctx):
+    """Every summary readout value records its sample size (kefed-cell-n) so the reader knows how
+    many observations back it — Eric Wang: 'needs number of animals / sample size'."""
+    offenders = [f"{iid}:{rid}:{c.get('variable')}"
+                 for iid, rid, c in _measurement_cells(ctx)
+                 if c.get("number") is not None and c.get("n") is None]
+    return _finding("readout-sample-size", "Readouts record a sample size (n)", "kefed", "low",
+                    offenders, "every numeric readout records its sample size (n)",
+                    "{n} readout value(s) record no sample size (set 'n' on the datum cell)", warn=True)
+
+
 SENSEMAKING_CHECKS = [
     _chk_has_observations, _chk_has_claims, _chk_claims_grounded, _chk_notes_anchored,
     _chk_experiments_measurement, _chk_measurement_signature, _chk_variables_quality_scale,
     _chk_quality_grounding_state, _chk_instances_cells, _chk_fragments_located,
+    # KEfED bigraph structural checks (over ctx["graphs"])
+    _chk_bipartite, _chk_flow_roles, _chk_acyclic, _chk_transformation_mapping,
+    _chk_experiment_has_subject, _chk_nodes_connected,
+    # readout-quality checks (over instance data cells)
+    _chk_measurement_units, _chk_readout_sample_size,
 ]
 
 
@@ -3678,9 +3969,15 @@ def cmd_lint_sensemaking(args):
             claim_obs = {}
             for r in co_rows:
                 claim_obs.setdefault(r["claim"], []).append(r["observation"])
-            signatures = {e["id"]: _data_signature(tx, e["id"]) for e in bundle.get("experiments", []) or []}
+            # Gather every KEfED bigraph model under this bundle: inline experiments (kefed-model)
+            # AND the templates behind instances (kefed-instance -> kefed-instance-of -> model).
+            # This is what the structural/signature checks run over — template-based curation was
+            # invisible to the earlier experiment-only checks.
+            model_ids = _bundle_model_ids(tx, bundle_id)
+            graphs = {mid: _model_graph(tx, mid) for mid in model_ids}
+            signatures = {mid: _data_signature(tx, mid) for mid in model_ids}
     ctx = {"paper": pid, "bundle": bundle, "fragments": fragments, "derivations": derivations,
-           "claim_obs": claim_obs, "signatures": signatures}
+           "claim_obs": claim_obs, "signatures": signatures, "graphs": graphs}
     checks = [fn(ctx) for fn in SENSEMAKING_CHECKS]
     summary = {
         "passed": sum(1 for c in checks if c["status"] == "pass"),
@@ -4500,6 +4797,91 @@ def cmd_add_reported_claim(args):
                       "cites": cite_ids, "observations": obs_ids}, indent=2))
 
 
+def cmd_link_claim_observation(args):
+    """Link an already-curated reported-claim to a supporting observation (scilit-claim-observation),
+    idempotently. Use to ground existing claims in their evidence without recreating them."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            ok = list(tx.query(
+                f'match $c isa scilit-claim, has id "{escape_string(args.claim)}"; '
+                f'$o isa scilit-observation, has id "{escape_string(args.observation)}"; '
+                f'fetch {{ "c": $c.id }};').resolve())
+            if not ok:
+                print(json.dumps({"success": False, "error": "claim or observation not found"})); sys.exit(1)
+            exists = list(tx.query(
+                f'match $c isa scilit-claim, has id "{escape_string(args.claim)}"; '
+                f'$o isa scilit-observation, has id "{escape_string(args.observation)}"; '
+                f'(claim: $c, observation: $o) isa scilit-claim-observation; fetch {{ "c": $c.id }};').resolve())
+            if not exists:
+                tx.query(
+                    f'match $c isa scilit-claim, has id "{escape_string(args.claim)}"; '
+                    f'$o isa scilit-observation, has id "{escape_string(args.observation)}"; '
+                    f'insert (claim: $c, observation: $o) isa scilit-claim-observation;').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "claim": args.claim, "observation": args.observation,
+                      "already_linked": bool(exists)}))
+
+
+def _paper_fulltext(tx, paper_id):
+    """Return (artifact_id, normalized_full_text) for a paper's scilit-pdf-fulltext, or (None, None).
+    Reads the .txt rendition from the per-paper cache dir."""
+    rows = list(tx.query(
+        f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; $a isa scilit-pdf-fulltext; '
+        f'(alh-artifact: $a, referent: $p) isa alh-representation; '
+        f'fetch {{ "id": $a.id, "cp": $a.cache-path }};').resolve())
+    if not rows:
+        return None, None
+    aid = rows[0]["id"]
+    cp = rows[0].get("cp")
+    cache = str(_get_cache_dir())
+    path = os.path.join(cache, cp) if cp else None
+    if not path or not os.path.exists(path):
+        # deterministic fallback: fulltext/<pid>/<artifact>.txt
+        cand = os.path.join(cache, "fulltext", paper_id, f"{aid}.txt")
+        path = cand if os.path.exists(cand) else None
+    text = open(path, encoding="utf-8").read() if path else None
+    return aid, text
+
+
+def cmd_anchor_note(args):
+    """Span-anchor a rhetorical note (claim/observation/gap) to a verbatim quote in the paper's full
+    text: create a scilit-sentence fragment (with char offset+length) on the full-text artifact and
+    link the note to it via alh-derivation. The --quote must appear (whitespace-normalized) in the
+    cached full text; the offset is computed, so the claim traces to the exact supporting sentence(s)."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            note = list(tx.query(
+                f'match $n isa alh-information-content-entity, has id "{escape_string(args.note)}"; '
+                f'fetch {{ "id": $n.id }};').resolve())
+            if not note:
+                print(json.dumps({"success": False, "error": "note not found"})); sys.exit(1)
+            aid, full = _paper_fulltext(tx, args.paper)
+            if not aid:
+                print(json.dumps({"success": False, "error": "no full-text artifact for paper"})); sys.exit(1)
+            quote = args.quote
+            offset, length = -1, len(quote)
+            if full:
+                norm = re.sub(r"\s+", " ", full)
+                needle = re.sub(r"\s+", " ", quote).strip()
+                i = norm.find(needle)
+                if i < 0 and len(needle) > 40:
+                    i = norm.find(needle[:40])
+                offset, length = i, len(needle)
+            if offset < 0 and not getattr(args, "force", False):
+                print(json.dumps({"success": False, "error": "quote not found in full text; refine --quote or pass --force"}))
+                sys.exit(1)
+            fid = generate_id("frag"); ts = get_timestamp()
+            tx.query(f'insert $f isa scilit-sentence, has id "{fid}", has content "{escape_string(quote)}", '
+                     f'has offset {offset}, has length {length}, has created-at {ts};').resolve()
+            tx.query(f'match $a isa alh-artifact, has id "{escape_string(aid)}"; $f isa alh-fragment, has id "{fid}"; '
+                     f'insert (whole: $a, part: $f) isa alh-fragmentation;').resolve()
+            tx.query(f'match $n isa alh-information-content-entity, has id "{escape_string(args.note)}"; '
+                     f'$f isa alh-fragment, has id "{fid}"; '
+                     f'insert (derivative: $n, derived-from-source: $f) isa alh-derivation, has created-at {ts};').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "note": args.note, "fragment": fid, "offset": offset, "located": offset >= 0}))
+
+
 def cmd_add_reported_gap(args):
     """Add a scilit-gap (a gap stated within the paper) to a sensemaking bundle."""
     gap_id = generate_id("scgap")
@@ -4875,6 +5257,13 @@ def cmd_link_nodes(args):
     """Connect two kefed-model-nodes via ooevv-process-input (from_node is input-node,
     to_node is consuming-node) or ooevv-process-output (from_node is producing-node,
     to_node is output-node). --role input|output.
+
+    The bigraph is BIPARTITE: entities are the inputs/outputs of processes, so a flow edge always
+    joins an entity to a process. This verb ENFORCES that at write-time:
+      --role input   requires  entity(from) -> process(to)   (material/data consumed BY a process)
+      --role output  requires  process(from) -> entity(to)   (material/data produced BY a process)
+    An edge that would join two entities or two processes (or run the wrong direction) is refused
+    unless --force is given. Both nodes must already be typed (add-entity-node / add-process).
     Replaces cmd_link_entity (which incorrectly linked scilit-entity directly)."""
     if args.role not in ("input", "output"):
         print(json.dumps({"success": False, "error": "--role must be input|output"})); sys.exit(1)
@@ -4886,6 +5275,18 @@ def cmd_link_nodes(args):
                 f'fetch {{ "src": $src.id }};').resolve())
             if not ok:
                 print(json.dumps({"success": False, "error": "Source or target node not found"})); sys.exit(1)
+            # bipartite / direction enforcement (skippable with --force)
+            src_cls = _node_class(_node_def(tx, args.from_node)[1])
+            tgt_cls = _node_class(_node_def(tx, args.to_node)[1])
+            want = ("entity", "process") if args.role == "input" else ("process", "entity")
+            if not getattr(args, "force", False) and (src_cls, tgt_cls) != want:
+                print(json.dumps({"success": False, "error": (
+                    f"--role {args.role} requires {want[0]}->{want[1]}, but from_node is "
+                    f"{src_cls or 'untyped'} and to_node is {tgt_cls or 'untyped'}. The KEfED bigraph "
+                    f"is bipartite (entities flow into/out of processes; never entity->entity or "
+                    f"process->process). Fix the edge, retype a node, or pass --force to override."),
+                    "from_class": src_cls, "to_class": tgt_cls, "expected": list(want)}))
+                sys.exit(1)
             if args.role == "input":
                 rel = f'(input-node: $src, consuming-node: $tgt) isa ooevv-process-input'
             else:
@@ -4895,7 +5296,8 @@ def cmd_link_nodes(args):
                 f'$tgt isa kefed-model-node, has id "{escape_string(args.to_node)}"; '
                 f'insert {rel};').resolve()
             tx.commit()
-    print(json.dumps({"success": True, "from_node": args.from_node, "to_node": args.to_node, "role": args.role}))
+    print(json.dumps({"success": True, "from_node": args.from_node, "to_node": args.to_node,
+                      "role": args.role, "from_class": src_cls, "to_class": tgt_cls}))
 
 
 def _spec_enum_count(tx, scale_id):
@@ -5029,6 +5431,88 @@ def cmd_bind_parameter(args):
             tx.commit()
     print(json.dumps({"success": True, "node": node_id, "parameter": args.parameter,
                       "target_entity": getattr(args, "target_entity", None)}))
+
+
+# --- node-class helpers (shared by link-nodes enforcement, the linter, and hgraph export) ---
+# A kefed-model-node is either an ENTITY (material or information/dataset) or a PROCESS
+# (assay / material-processing / data-transformation). The bigraph is bipartite between the
+# two classes: entities are the inputs and outputs of processes; entities never flow into
+# entities and processes never flow into processes.
+_ENTITY_DEF_TYPES = {"ooevv-material-entity", "ooevv-information-content-entity"}
+_PROCESS_DEF_TYPES = {"ooevv-assay", "ooevv-material-processing", "ooevv-data-transformation"}
+
+
+def _node_class(type_label):
+    """Map a concrete OOEVV def-type label to the bigraph node class ('entity'|'process'|None)."""
+    if type_label in _ENTITY_DEF_TYPES:
+        return "entity"
+    if type_label in _PROCESS_DEF_TYPES:
+        return "process"
+    return None
+
+
+def cmd_map_params(args):
+    """Declare how a DATA-TRANSFORMATION maps its input parameters to output parameters
+    (ooevv-param-mapping). This is what lets a data signature be computed CORRECTLY for
+    computed data: the rule tells the traversal which incoming index parameters SURVIVE the
+    computation, which are CONSUMED, which are FOLDED into a derived contrast, and which are
+    freshly DERIVED — because a transformation can silently change or destroy an index and
+    that cannot be inferred from the graph alone. Classic case: a correlation coefficient
+    consumes (destroys) the per-sample index of the datasets it correlates.
+
+    --transformation <knode>   data-transformation node (kefed-model-node typed ooevv-data-transformation)
+    --rule <kind>              passthrough | aggregate-collapse-destroy | combine | derive
+    --in  <var-ids>            comma-separated ooevv-variable ids (input parameters):
+                                 passthrough -> exactly 1; aggregate-collapse-destroy -> >=1;
+                                 combine -> >=2; derive -> none
+    --out <var-id>             output parameter var id:
+                                 passthrough/combine/derive -> required;
+                                 aggregate-collapse-destroy -> omitted (the index is destroyed)
+
+    One ooevv-param-mapping relation is written per rule (combine carries several in-parameter players).
+    The transformation role is played by the node's OOEVV data-transformation DEFINITION; the in/out
+    parameters are this model's variables, so the mapping is model-specific in practice.
+    """
+    RULES = {"passthrough", "aggregate-collapse-destroy", "combine", "derive"}
+    if args.rule not in RULES:
+        print(json.dumps({"success": False, "error": f"--rule must be one of {sorted(RULES)}"})); sys.exit(1)
+    ins = [x.strip() for x in (getattr(args, "in_params", "") or "").split(",") if x.strip()]
+    out = getattr(args, "out_param", None)
+    errs = {
+        "passthrough": (len(ins) == 1 and out, "passthrough needs exactly 1 --in and 1 --out"),
+        "aggregate-collapse-destroy": (len(ins) >= 1 and not out,
+            "aggregate-collapse-destroy needs >=1 --in and NO --out (the index is consumed)"),
+        "combine": (len(ins) >= 2 and out, "combine needs >=2 --in and 1 --out"),
+        "derive": (not ins and out, "derive needs NO --in and 1 --out"),
+    }
+    ok_arity, msg = errs[args.rule]
+    if not ok_arity:
+        print(json.dumps({"success": False, "error": msg})); sys.exit(1)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            def_id, klass = _node_def(tx, args.transformation)
+            if klass != "ooevv-data-transformation":
+                print(json.dumps({"success": False,
+                                  "error": f"--transformation must be a data-transformation node (got type {klass})"}))
+                sys.exit(1)
+            for vid in ins + ([out] if out else []):
+                if not list(tx.query(f'match $v isa ooevv-variable, has id "{escape_string(vid)}"; '
+                                     f'fetch {{ "id": $v.id }};').resolve()):
+                    print(json.dumps({"success": False, "error": f"variable {vid} not found"})); sys.exit(1)
+            # transformation role is played by the OOEVV data-transformation DEFINITION, not the node
+            clauses = [f'$t isa ooevv-data-transformation, has id "{escape_string(def_id)}";']
+            roles = ["transformation: $t"]
+            for i, vid in enumerate(ins):
+                clauses.append(f'$in{i} isa ooevv-variable, has id "{escape_string(vid)}";')
+                roles.append(f"in-parameter: $in{i}")
+            if out:
+                clauses.append(f'$out isa ooevv-variable, has id "{escape_string(out)}";')
+                roles.append("out-parameter: $out")
+            tx.query("match " + " ".join(clauses) + " insert (" + ", ".join(roles) +
+                     f') isa ooevv-param-mapping, has ooevv-param-rule-kind "{escape_string(args.rule)}";').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "transformation": args.transformation, "transformation_def": def_id,
+                      "rule": args.rule, "in": ins, "out": out}))
 
 
 # =============================================================================
@@ -5420,7 +5904,10 @@ def cmd_instantiate_template(args):
 
 def cmd_add_datum(args):
     """FILL: add one data row to an instance. --cells is a JSON list of
-    {"variable": <var id>, "value": <str>, "number"?: <float>} (independents + the measured value).
+    {"variable": <var id>, "value": <str>, "number"?: <float>, "n"?: <float>, "error"?: <float>,
+     "error_type"?: "sd|sem|ci95|range|iqr", "unit"?: <str>} (independents + the measured value).
+    n/error/error_type describe a summary readout (sample size + dispersion); unit is the per-row
+    unit (lets one generic "response" measurement carry a different unit per readout type).
     Provenance (coexistence): link an existing --observation, or pass --gloss to create one inline."""
     try:
         cells = json.loads(args.cells)
@@ -5461,13 +5948,22 @@ def cmd_add_datum(args):
             for c in cells:
                 vid = escape_string(str(c["variable"]))
                 val = escape_string(str(c.get("value", "")))
-                num = c.get("number", None)
-                numclause = f', has kefed-cell-number {float(num)}' if num is not None else ""
+                extra = ""
+                if c.get("number", None) is not None:
+                    extra += f', has kefed-cell-number {float(c["number"])}'
+                if c.get("n", None) is not None:
+                    extra += f', has kefed-cell-n {float(c["n"])}'
+                if c.get("error", None) is not None:
+                    extra += f', has kefed-cell-error {float(c["error"])}'
+                if c.get("error_type", None):
+                    extra += f', has kefed-cell-error-type "{escape_string(str(c["error_type"]))}"'
+                if c.get("unit", None):
+                    extra += f', has kefed-cell-unit "{escape_string(str(c["unit"]))}"'
                 tx.query(
                     f'match $d isa kefed-row, has id "{did}"; '
                     f'$v isa ooevv-variable, has id "{vid}"; '
                     f'insert (datum: $d, cell-variable: $v) isa kefed-cell, '
-                    f'has kefed-cell-value "{val}"{numclause};').resolve()
+                    f'has kefed-cell-value "{val}"{extra};').resolve()
             obs_id = getattr(args, "observation", None)
             if not obs_id and getattr(args, "gloss", None):
                 obs_id = generate_id("scobs")
@@ -5485,6 +5981,66 @@ def cmd_add_datum(args):
             tx.commit()
     print(json.dumps({"success": True, "datum_id": did, "instance": args.instance,
                       "cells": len(cells), "observation": obs_id}))
+
+
+def cmd_set_cell(args):
+    """Upsert one variable's cell across data rows without rebuilding them. Scope = one --datum row,
+    or ALL rows of an --instance. Updates the given attributes on an existing cell, or ADDS the
+    variable as a new column (cell) to rows that lack it (a --value is required to create). Use to
+    backfill statistics/units (n/error/error_type/unit) or a newly-added variable's value onto
+    already-curated rows. Only the attributes you pass are changed; others are left as-is."""
+    num_updates, str_updates = {}, {}
+    if getattr(args, "number", None) is not None: num_updates["kefed-cell-number"] = float(args.number)
+    if getattr(args, "n", None) is not None: num_updates["kefed-cell-n"] = float(args.n)
+    if getattr(args, "error", None) is not None: num_updates["kefed-cell-error"] = float(args.error)
+    if getattr(args, "value", None) is not None: str_updates["kefed-cell-value"] = str(args.value)
+    if getattr(args, "error_type", None): str_updates["kefed-cell-error-type"] = str(args.error_type)
+    if getattr(args, "unit", None): str_updates["kefed-cell-unit"] = str(args.unit)
+    all_attrs = {**num_updates, **str_updates}
+    if not all_attrs:
+        print(json.dumps({"success": False, "error": "provide at least one of "
+                          "--value/--number/--n/--error/--error-type/--unit"})); sys.exit(1)
+    vid = escape_string(args.variable)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            if getattr(args, "datum", None):
+                datum_ids = [args.datum]
+            elif getattr(args, "instance", None):
+                datum_ids = [r["id"] for r in tx.query(
+                    f'match $i isa kefed-instance, has id "{escape_string(args.instance)}"; '
+                    f'(instance: $i, datum: $d) isa kefed-instance-datum; fetch {{ "id": $d.id }};').resolve()]
+            else:
+                print(json.dumps({"success": False, "error": "provide --datum or --instance"})); sys.exit(1)
+            created, updated = 0, 0
+            for did in datum_ids:
+                de = escape_string(did)
+                cellq = (f'$d isa kefed-row, has id "{de}"; $v isa ooevv-variable, has id "{vid}"; '
+                         f'$c isa kefed-cell, links (datum: $d, cell-variable: $v);')
+                exists = bool(list(tx.query(f'match {cellq} fetch {{ "x": $v.id }};').resolve()))
+                if not exists:
+                    if "kefed-cell-value" not in str_updates:
+                        print(json.dumps({"success": False,
+                                          "error": f"cell for {args.variable} absent on row {did}; --value required to create it"}))
+                        sys.exit(1)
+                    clauses = [f'has kefed-cell-value "{escape_string(str_updates["kefed-cell-value"])}"']
+                    for a, val in num_updates.items():
+                        clauses.append(f'has {a} {val}')
+                    for a, val in str_updates.items():
+                        if a != "kefed-cell-value":
+                            clauses.append(f'has {a} "{escape_string(val)}"')
+                    tx.query(f'match $d isa kefed-row, has id "{de}"; $v isa ooevv-variable, has id "{vid}"; '
+                             f'insert (datum: $d, cell-variable: $v) isa kefed-cell, {", ".join(clauses)};').resolve()
+                    created += 1
+                else:
+                    for a, val in all_attrs.items():
+                        # delete existing value of this attr on the cell (no-op if absent), then insert
+                        tx.query(f'match {cellq} $c has {a} $old; delete has $old of $c;').resolve()
+                        lit = f'{val}' if a in num_updates else f'"{escape_string(val)}"'
+                        tx.query(f'match {cellq} insert $c has {a} {lit};').resolve()
+                    updated += 1
+            tx.commit()
+    print(json.dumps({"success": True, "variable": args.variable, "rows_created": created,
+                      "rows_updated": updated, "attributes": list(all_attrs)}))
 
 
 def cmd_add_citation_impact(args):
@@ -5984,10 +6540,13 @@ def main():
     p.add_argument("--role", required=True, help="input|output")
 
     p = subparsers.add_parser("link-nodes",
-        help="Connect two kefed-model-nodes via ooevv-process-input (role=input) or ooevv-process-output (role=output)")
+        help="Connect two kefed-model-nodes via ooevv-process-input (role=input) or ooevv-process-output "
+             "(role=output). Enforces the bipartite bigraph (entity<->process); use --force to override.")
     p.add_argument("--from-node", dest="from_node", required=True, help="Source kefed-model-node id")
     p.add_argument("--to-node", dest="to_node", required=True, help="Target kefed-model-node id")
-    p.add_argument("--role", required=True, help="input|output")
+    p.add_argument("--role", required=True, help="input (entity->process) | output (process->entity)")
+    p.add_argument("--force", action="store_true",
+        help="Override the bipartite/direction check (records a non-well-formed edge anyway)")
 
     p = subparsers.add_parser("add-variable",
         help="Add an OOEVV experimental-variable (role + quality + scale) to a kefed-model-node")
@@ -6013,6 +6572,19 @@ def main():
     p.add_argument("--parameter", required=True, help="Parameter variable id (scvar-...)")
     p.add_argument("--target-entity", dest="target_entity",
         help="kefed-model-node id the parameter targets (specificity via ooevv-parameter-target)")
+
+    p = subparsers.add_parser("map-params",
+        help="Declare a data-transformation's input->output parameter mapping (ooevv-param-mapping) so "
+             "the data signature is computed correctly (e.g. a correlation CONSUMES the per-sample index)")
+    p.add_argument("--transformation", required=True, help="data-transformation node id (knode-...)")
+    p.add_argument("--rule", required=True,
+        help="passthrough | aggregate-collapse-destroy | combine | derive")
+    p.add_argument("--in", dest="in_params",
+        help="Comma-separated input parameter var ids (passthrough:1, aggregate-collapse-destroy:>=1, "
+             "combine:>=2, derive:none)")
+    p.add_argument("--out", dest="out_param",
+        help="Output parameter var id (required for passthrough/combine/derive; omitted for "
+             "aggregate-collapse-destroy)")
 
     # --- KEfED model-EDIT verbs (correct an existing model in place) ---
     p = subparsers.add_parser("rename-node",
@@ -6074,11 +6646,25 @@ def main():
     p = subparsers.add_parser("add-datum", help="FILL: add one data row (cells + provenance observation) to an instance")
     p.add_argument("--instance", required=True, help="Instance id (scinst-...)")
     p.add_argument("--cells", required=True,
-        help='JSON list of {"variable": <var id>, "value": <str>, "number"?: <float>}')
+        help='JSON list of {"variable": <id>, "value": <str>, "number"?: <float>, "n"?: <float>, '
+             '"error"?: <float>, "error_type"?: "sd|sem|ci95|range|iqr", "unit"?: <str>}')
     p.add_argument("--observation", help="Link an existing scilit-observation id (provenance)")
     p.add_argument("--gloss", help="Create a provenance observation inline (prose gloss + source quote)")
     p.add_argument("--knowledge-level", dest="knowledge_level", help="(inline obs) default 'observation'")
     p.add_argument("--bio-scale", dest="bio_scale", help="(inline obs) default 'molecular'")
+
+    p = subparsers.add_parser("set-cell",
+        help="Upsert one variable's cell across an instance's rows (or one --datum): backfill "
+             "n/error/error_type/unit or a newly-added variable's value without rebuilding rows")
+    p.add_argument("--instance", help="Instance id (scinst-...) — apply to ALL its data rows")
+    p.add_argument("--datum", help="Single data row id (scdatum-...) — scope to one row")
+    p.add_argument("--variable", required=True, help="ooevv-variable id (scvar-...) the cell holds")
+    p.add_argument("--value", help="Cell string value (required when creating a new cell)")
+    p.add_argument("--number", type=float, help="Numeric form of the value")
+    p.add_argument("--n", type=float, help="Sample size behind this readout")
+    p.add_argument("--error", type=float, help="Dispersion magnitude")
+    p.add_argument("--error-type", dest="error_type", help="sd|sem|ci95|range|iqr")
+    p.add_argument("--unit", help="Per-row unit of the value")
 
     # add-reported-claim
     p = subparsers.add_parser("add-reported-claim",
@@ -6090,6 +6676,19 @@ def main():
         help="AZ zone: background|own-claim|own-method|own-result|contrast|basis|implication")
     p.add_argument("--cites", help="Comma-separated paper ids this claim cites (citation hinges)")
     p.add_argument("--observations", help="Comma-separated observation ids that support it")
+
+    p = subparsers.add_parser("link-claim-observation",
+        help="Link an existing reported-claim to a supporting observation (idempotent)")
+    p.add_argument("--claim", required=True, help="scilit-claim id (screp-...)")
+    p.add_argument("--observation", required=True, help="scilit-observation id (scobs-...)")
+
+    p = subparsers.add_parser("anchor-note",
+        help="Span-anchor a note (claim/observation/gap) to a verbatim quote in the paper's full text "
+             "(creates a fragment + alh-derivation)")
+    p.add_argument("--note", required=True, help="note id (screp-/scobs-/scgap-...)")
+    p.add_argument("--paper", required=True, help="paper id (scilit-paper-...)")
+    p.add_argument("--quote", required=True, help="verbatim text span from the full text")
+    p.add_argument("--force", action="store_true", help="anchor even if the quote isn't located (offset -1)")
 
     # add-reported-gap
     p = subparsers.add_parser("add-reported-gap",
@@ -6124,6 +6723,8 @@ def main():
 
     p = subparsers.add_parser("show-experiment", help="Show one experiment's full KEfED protocol graph")
     p.add_argument("--id", required=True, help="Experiment id (scexp-...)")
+    p.add_argument("--format", choices=["json", "hgraph"], default="json",
+        help="json (default) | hgraph (Bolinas-style hypergraph term, for the future SHRG layer)")
 
     p = subparsers.add_parser("show-template", help="Show one reusable template (design graph + slots + variables)")
     p.add_argument("--id", required=True, help="Template id (sctpl-...)")
@@ -6252,6 +6853,7 @@ def main():
         "link-nodes": cmd_link_nodes,
         "add-variable": cmd_add_variable,
         "bind-parameter": cmd_bind_parameter,
+        "map-params": cmd_map_params,
         "rename-node": cmd_rename_node,
         "retype-node": cmd_retype_node,
         "move-variable": cmd_move_variable,
@@ -6264,7 +6866,10 @@ def main():
         "audit-terms": cmd_audit_terms,
         "instantiate-template": cmd_instantiate_template,
         "add-datum": cmd_add_datum,
+        "set-cell": cmd_set_cell,
         "add-reported-claim": cmd_add_reported_claim,
+        "link-claim-observation": cmd_link_claim_observation,
+        "anchor-note": cmd_anchor_note,
         "add-reported-gap": cmd_add_reported_gap,
         "list-databases": cmd_list_databases,
         "show-stage": cmd_show_stage,

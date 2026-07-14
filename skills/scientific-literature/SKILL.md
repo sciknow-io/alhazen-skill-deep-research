@@ -128,6 +128,47 @@ knowledge linked to the grounded VALUES** bound to the template's parameters and
 paper's bundle → bind grounded values → compose templates for multi-arm designs`. This makes
 correctness a structural consequence of reuse rather than per-paper vigilance.
 
+### Per-paper KEfED sensemaking — the (A)–(D) procedure
+
+Run these four steps for every paper, then gate the result with `lint-sensemaking` (below). Steps
+(B)–(D) are enforced by machine checks; step (A)'s *completeness* is not lintable (nothing can know
+which experiments you failed to enter) — it is a discipline you owe the paper.
+
+- **(A) Enumerate every experiment.** A paper usually runs *many* experiments (often 20+), spread
+  across sections and figures. Before modelling, inventory them: walk the figures/tables and the
+  claims and list each distinct experiment that produces evidence. Each becomes its own KEfED model
+  (an inline experiment, or an instance of a template). *Completeness is on you; the linter only
+  checks the models you build are well-formed.*
+- **(B) Describe each experiment as a BIPARTITE bigraph.** Nodes are **entities** (`material-entity`
+  or an information/**dataset** ICE) and **processes** (`assay` | `material-processing` |
+  `data-transformation`). A process's inputs and outputs are entities. **An entity never flows into
+  another entity, and a process never flows into another process** — every flow edge joins an entity
+  to a process. `link-nodes` enforces this at write-time (`--role input` ⇒ entity→process; `--role
+  output` ⇒ process→entity; `--force` overrides); `_chk_bipartite` + `_chk_flow_roles` re-check it,
+  and `_chk_acyclic` verifies the graph is a DAG. *(A future graph-grammar layer — a Synchronous
+  Hyperedge Replacement Grammar (SHRG), e.g. via Bolinas — will recognise richer design-pattern
+  grammars; export a model's hypergraph term today with `show-experiment --id <m> --format hgraph`.)*
+- **(C) Attach parameters; read the data signature.** Put each `parameter`/`constant` on the
+  biologically-correct node (rule 4 below) and each `measurement` on the process that measures it.
+  The **data signature** of a measurement — the parameter set that indexes its readout — is then
+  *computed* by tracing the bigraph (`show-data-signature`), not hand-assigned.
+- **(D) Capture how data-transformations remap the index — explicitly.** A `data-transformation`
+  that combines datasets can *change or destroy* index parameters, and this cannot be inferred from
+  the graph. Declare it with **`map-params`** (writes `ooevv-param-mapping`): `passthrough` (an index
+  param survives), `aggregate-collapse-destroy` (it is **consumed** — e.g. a correlation coefficient
+  or a mean-over-replicates collapses the per-sample index), `combine` (≥2 params fold into one
+  derived contrast), `derive` (a new param appears). `show-data-signature` applies these rules so the
+  computed value carries the *correct* index (and reports what was `consumed`); `_chk_transformation_mapping`
+  **fails** any index-consuming transformation left undeclared (it would otherwise default to naive
+  passthrough — the classic signature-inflation bug).
+
+### Model-quality gate — `lint-sensemaking --id <paper>`
+
+Runs the OOEVV/KEfED/rhetoric checks over the paper's whole curation (inline experiments **and** the
+templates behind its instances). The KEfED-category checks encode (B)–(D): `bigraph-bipartite`,
+`bigraph-flow-roles`, `bigraph-acyclic`, `experiment-has-subject`, `nodes-connected`, and
+`transformation-mapping`. Treat any `fail` as blocking — a well-formed model passes all six.
+
 **A template = a documented design pattern** (`ensure-template`, `kefed-model-state: template`): a
 generic bigraph plus a stated **purpose** and the **warrant** its data-signature licenses (e.g.
 *sufficiency* = a phenotype readout indexed by `{transgene × induction}`). Its data-signature
@@ -240,12 +281,14 @@ wrong, **OMIT the grounding** — better ungrounded-with-a-precise-local-definit
 
 **Verb sequence.** *Author/extend a template:* `ensure-template [--element-set]` → `add-entity-node
 --template <sctpl> --subject` / `add-process --template <sctpl> --type` → `link-nodes --role
-input|output` → `ensure-quality [--curie]` → `ensure-value-spec --quality --scale-type` →
-`add-variable --value-spec` → `show-template` / `show-data-signature` to verify the fingerprint.
-*Instantiate for a paper:* `instantiate-template --bundle <scsense> --template <sctpl>` → `add-datum
---cells` (grounded values, one row per data point) → `show-instance`. A genuinely novel one-off with
-no template can still be built directly with `add-experiment [--element-set]`, but prefer promoting
-the recurring design to a template.
+input|output` (bipartite-enforced) → `ensure-quality [--curie]` → `ensure-value-spec --quality
+--scale-type` → `add-variable --value-spec` → `map-params --transformation <knode> --rule <kind>`
+for every index-remapping data-transformation (D) → `show-template` / `show-data-signature` to
+verify the fingerprint. *Instantiate for a paper:* `instantiate-template --bundle <scsense>
+--template <sctpl>` → `add-datum --cells` (grounded values, one row per data point) →
+`show-instance`. A genuinely novel one-off with no template can still be built directly with
+`add-experiment [--element-set]`, but prefer promoting the recurring design to a template. Finish
+with `lint-sensemaking --id <paper>` and clear every KEfED `fail`.
 
 **Correcting an existing model (edit verbs).** To bring an already-curated model up to the rules above
 without rebuilding it — the node id, its variables and its flow edges are preserved:

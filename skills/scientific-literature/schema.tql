@@ -916,6 +916,13 @@ attribute kefed-model-state, value string; # template (no values bound) | instan
 attribute scilit-warrant, value string;    # what the instance's data licenses (derived from index sets)
 attribute kefed-cell-value, value string;  # the value a variable took in a data row (independent or measured)
 attribute kefed-cell-number, value double; # numeric form of the cell value (for aggregation), optional
+# per-datum readout statistics + unit (a readout value is a summary: sample size, dispersion, unit).
+# Keeping unit on the cell (not only on the value-spec scale) lets one generic "response" measurement
+# carry a different unit per readout type (pubchem-style response|units) — see SKILL.md flexible schema.
+attribute kefed-cell-n, value double;          # sample size (n) behind this readout value
+attribute kefed-cell-error, value double;      # dispersion magnitude (paired with kefed-cell-error-type)
+attribute kefed-cell-error-type, value string; # sd | sem | ci95 | range | iqr
+attribute kefed-cell-unit, value string;       # unit of this datum's value (per-row; overrides/refines the scale unit)
 
 # --- additive owns on kefed-model ---
 entity kefed-model owns kefed-model-state;
@@ -927,7 +934,8 @@ relation kefed-instance-datum,             # an instance groups its data rows
     relates instance, relates datum;
 relation kefed-cell,                       # one cell = the value a variable took in a datum row
     relates datum, relates cell-variable,
-    owns kefed-cell-value, owns kefed-cell-number;
+    owns kefed-cell-value, owns kefed-cell-number,
+    owns kefed-cell-n, owns kefed-cell-error, owns kefed-cell-error-type, owns kefed-cell-unit;
 relation kefed-datum-observation,          # a data row links to its free-text observation (provenance)
     relates datum, relates observation;
 

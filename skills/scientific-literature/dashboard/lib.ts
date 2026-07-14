@@ -239,7 +239,7 @@ export interface ReportedClaimNode {
   statement?: string;
   cites?: InvestigationPaperRef[];
 }
-export interface ReportedGapNode { id: string; name?: string; goal?: string }
+export interface ReportedGapNode { id: string; name?: string; content?: string; goal?: string }
 // --- KEfED / OOEVV protocol graph ---
 // Curation standard: elements carry a plain-English definition + (for abbreviations) a long_form.
 export interface OoevvScale { id: string; type?: string; unit?: string; values?: string[] }

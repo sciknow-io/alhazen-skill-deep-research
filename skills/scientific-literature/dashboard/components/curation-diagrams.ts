@@ -17,7 +17,10 @@ const CLASSDEFS = [
 
 const mid = (s: string) => 'n' + (s || '').replace(/[^a-zA-Z0-9]/g, '_');
 const esc = (s?: string) => (s || '').replace(/["[\]{}|<>]/g, ' ').replace(/\s+/g, ' ').trim();
-const trunc = (s: string, n = 42) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+// Overview-diagram labels clip for compactness; the authoritative full-text view is the HTML
+// KefedProtocolGraph (kefed-graph.tsx), whose nodes/params carry title= hover tooltips, and the
+// claim/gap/observation text blocks (paper-curation.tsx) show full statements.
+const trunc = (s: string, n = 60) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 export function layerOverviewMermaid(d: PaperCurationDetail): string {
   const b = d.bundle || ({} as BundleDetail);

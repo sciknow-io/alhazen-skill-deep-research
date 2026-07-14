@@ -656,6 +656,69 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py expo
 
 ---
 
+## KEfED / OOEVV curation commands
+
+KEfED (Knowledge Engineering from Experimental Design) reconstructs each experiment in a paper as a
+**bipartite bigraph** of entities and processes so every readout carries a design-*derived* index
+(its "data signature"). Full methodology + authoring rules: **SKILL.md → "KEfED Model Authoring"**
+and its **(A)–(D) procedure**. This is the command index; run these inside a paper's sensemaking
+bundle (`create-bundle` requires the paper's full text). All commands take the standard
+`uv run python .../scientific_literature.py <cmd>` form.
+
+### Build the bigraph
+```bash
+# One experiment (kefed-model + element-set) under a bundle; a paper has MANY (step A)
+add-experiment   --bundle <scsense> --name "<experiment name>" [--element-set <eset>]
+# Nodes: entities (material or dataset) and processes (assay|material-processing|data-transformation)
+add-entity-node  --experiment <m> --name "<generic kind>" --definition "..." [--subject]
+add-process      --experiment <m> --type assay|material-processing|data-transformation --name "..." --definition "..."
+# Flow edges — BIPARTITE-ENFORCED: input = entity->process, output = process->entity (step B)
+link-nodes       --from-node <a> --to-node <b> --role input|output [--force]
+```
+
+### Parameters, qualities, and the data signature (step C)
+```bash
+ensure-quality       --name "<measurand>" [--curie PATO:...]         # what is measured
+ensure-value-spec    --quality <scqual> --scale-type nominal|binary|ordinal|numeric|... [--values "a|b"]
+add-variable         --node <knode> --role parameter|constant|measurement --value-spec <scale>
+show-data-signature  --model <m>                                      # computed index set per measurement
+```
+
+### Index remapping through data-transformations (step D)
+`map-params` declares how a `data-transformation` rewrites its input parameters into output
+parameters (`ooevv-param-mapping`), so a computed value carries the *correct* index. Without it, an
+index-consuming transformation **fails** `lint-sensemaking` and defaults to naive passthrough.
+```bash
+# a correlation / mean CONSUMES (destroys) the per-sample index it folds over:
+map-params --transformation <knode> --rule aggregate-collapse-destroy --in <var>
+# a param survives the computation (optionally relabelled on the output):
+map-params --transformation <knode> --rule passthrough --in <var> --out <var>
+# >=2 params fold into one derived contrast (e.g. a fold-change):
+map-params --transformation <knode> --rule combine --in <v1>,<v2> --out <contrast>
+# the computation introduces a brand-new output parameter:
+map-params --transformation <knode> --rule derive --out <var>
+```
+
+### Templates, instances, and correction
+```bash
+ensure-template / list-templates / show-template          # reusable design patterns (recognize-reuse)
+instantiate-template --bundle <scsense> --template <sctpl>
+add-datum            --instance <scinst> --cells '<json rows>' [--gloss "..."]
+#   each cell: {"variable","value","number"?,"n"?,"error"?,"error_type"?,"unit"?}
+#   n = sample size · error+error_type (sd|sem|ci95|range|iqr) = dispersion · unit = per-row unit
+rename-node / retype-node / move-variable / set-node-definition / delete-node   # edit in place
+show-experiment      --id <m> [--format json|hgraph]      # hgraph = Bolinas term (future SHRG layer)
+```
+
+### Quality gate
+```bash
+lint-sensemaking --id <paper>     # OOEVV/KEfED/rhetoric checks; KEfED-category checks encode (B)-(D):
+#   bigraph-bipartite · bigraph-flow-roles · bigraph-acyclic · experiment-has-subject
+#   · nodes-connected · transformation-mapping   — clear every `fail` before considering a paper done.
+```
+
+---
+
 ## Meeting surveys (discourse sources)
 
 A **meeting survey** (a `survey`-type investigation, e.g. the CAIS 2026 conference survey)

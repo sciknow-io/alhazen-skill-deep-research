@@ -283,7 +283,7 @@ export function PaperCuration({ data }: { data: PaperCurationDetail }) {
           <Panel title={`Gaps (${gaps.length})`}>
             {gaps.map((g) => (
               <div key={g.id} style={{ marginBottom: 8 }}>
-                <p style={{ margin: 0, fontSize: 13, color: T.fg }}>{g.name}</p>
+                <p style={{ margin: 0, fontSize: 13, color: T.fg }} title={g.content || g.name}>{g.content || g.name}</p>
                 {g.goal && <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgFaint }}>{g.goal}</span>}
               </div>
             ))}
