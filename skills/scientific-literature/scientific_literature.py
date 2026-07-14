@@ -4822,6 +4822,31 @@ def cmd_link_claim_observation(args):
                       "already_linked": bool(exists)}))
 
 
+def cmd_link_datum_observation(args):
+    """Link an observation to a data row it is the measurement-in-context of (kefed-datum-observation),
+    idempotently. Completes the traceability chain claim -> observation -> datum -> instance -> model."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            ok = list(tx.query(
+                f'match $d isa kefed-row, has id "{escape_string(args.datum)}"; '
+                f'$o isa scilit-observation, has id "{escape_string(args.observation)}"; '
+                f'fetch {{ "d": $d.id }};').resolve())
+            if not ok:
+                print(json.dumps({"success": False, "error": "datum or observation not found"})); sys.exit(1)
+            exists = list(tx.query(
+                f'match $d isa kefed-row, has id "{escape_string(args.datum)}"; '
+                f'$o isa scilit-observation, has id "{escape_string(args.observation)}"; '
+                f'(datum: $d, observation: $o) isa kefed-datum-observation; fetch {{ "d": $d.id }};').resolve())
+            if not exists:
+                tx.query(
+                    f'match $d isa kefed-row, has id "{escape_string(args.datum)}"; '
+                    f'$o isa scilit-observation, has id "{escape_string(args.observation)}"; '
+                    f'insert (datum: $d, observation: $o) isa kefed-datum-observation;').resolve()
+            tx.commit()
+    print(json.dumps({"success": True, "datum": args.datum, "observation": args.observation,
+                      "already_linked": bool(exists)}))
+
+
 def _paper_fulltext(tx, paper_id):
     """Return (artifact_id, normalized_full_text) for a paper's scilit-pdf-fulltext, or (None, None).
     Reads the .txt rendition from the per-paper cache dir."""
@@ -6682,6 +6707,12 @@ def main():
     p.add_argument("--claim", required=True, help="scilit-claim id (screp-...)")
     p.add_argument("--observation", required=True, help="scilit-observation id (scobs-...)")
 
+    p = subparsers.add_parser("link-datum-observation",
+        help="Link an observation to the data row it interprets (kefed-datum-observation), completing "
+             "claim -> observation -> datum -> instance -> model")
+    p.add_argument("--observation", required=True, help="scilit-observation id (scobs-...)")
+    p.add_argument("--datum", required=True, help="data row id (scdatum-...)")
+
     p = subparsers.add_parser("anchor-note",
         help="Span-anchor a note (claim/observation/gap) to a verbatim quote in the paper's full text "
              "(creates a fragment + alh-derivation)")
@@ -6869,6 +6900,7 @@ def main():
         "set-cell": cmd_set_cell,
         "add-reported-claim": cmd_add_reported_claim,
         "link-claim-observation": cmd_link_claim_observation,
+        "link-datum-observation": cmd_link_datum_observation,
         "anchor-note": cmd_anchor_note,
         "add-reported-gap": cmd_add_reported_gap,
         "list-databases": cmd_list_databases,
